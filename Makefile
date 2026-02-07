@@ -1,7 +1,7 @@
 APP=clidojo
 BIN=bin/$(APP)
 
-.PHONY: build run test fmt dev-web dev-run snapshots image
+.PHONY: build run test fmt dev-web dev-run snapshots image webterm webterm-restart
 
 build:
 	go build -o $(BIN) ./cmd/clidojo
@@ -14,6 +14,14 @@ dev-run: build
 
 dev-web:
 	./scripts/dev-web.sh
+
+webterm: build
+	chmod +x ./scripts/webterm.sh
+	./scripts/webterm.sh
+
+webterm-restart: build
+	chmod +x ./scripts/webterm-restart.sh
+	./scripts/webterm-restart.sh
 
 test:
 	go test ./...

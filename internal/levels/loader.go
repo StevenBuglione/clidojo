@@ -38,7 +38,11 @@ func (l *FSLoader) LoadPacks(ctx context.Context, root string) ([]Pack, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load pack %s: %w", packPath, err)
 		}
-		pack.Path = packPath
+		absPackPath, err := filepath.Abs(packPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve pack path %s: %w", packPath, err)
+		}
+		pack.Path = absPackPath
 		applyPackDefaults(&pack)
 		if err := validatePackBuildPath(pack); err != nil {
 			return nil, fmt.Errorf("%s: %w", packPath, err)

@@ -7,21 +7,97 @@ make build
 ./bin/clidojo --sandbox=auto
 ```
 
-Development deterministic mode:
+Deterministic local mode:
 
 ```bash
 ./bin/clidojo --dev --sandbox=mock --demo=playable
 ```
 
-## Browser Preview via ttyd
+## Webterm (ttyd + tmux)
+
+Prerequisites:
+
+- `ttyd`
+- `tmux`
+
+Primary workflows:
+
+1. Deterministic UI debug (recommended for MCP + screenshots)
 
 ```bash
 scripts/dev-web.sh
-# default: http://127.0.0.1:7681
-# override: PORT=7682 DEV_HTTP=127.0.0.1:17322 scripts/dev-web.sh
+# default URL:   http://127.0.0.1:7681
+# default dev API: http://127.0.0.1:17321
 ```
 
-## Playwright Screenshots
+2. Stable tmux-backed webterm session
+
+```bash
+make webterm
+```
+
+3. Clean rebuild + restart (recommended while iterating)
+
+```bash
+make webterm-restart
+```
+
+Environment overrides:
+
+```bash
+PORT=7682 DEV_HTTP=127.0.0.1:17322 scripts/dev-web.sh
+
+CLIDOJO_WEBTERM_PORT=7683 CLIDOJO_WEBTERM_SESSION=clidojo-review make webterm-restart
+
+# real container run in webterm:
+CLIDOJO_WEBTERM_CMD='./bin/clidojo --dev --sandbox=auto --dev-http=127.0.0.1:17321' make webterm-restart
+```
+
+Quick health checks:
+
+```bash
+curl -sS http://127.0.0.1:7681/ >/dev/null && echo WEBTERM_OK
+curl -sS http://127.0.0.1:17321/__dev/ready
+tmux list-sessions | rg clidojo
+```
+
+Troubleshooting:
+
+- Restart log: `_tmp/webterm-restart.log`
+- If stale listener/session exists: run `make webterm-restart` again with a fresh `CLIDOJO_WEBTERM_SESSION`.
+
+## Debugging With Playwright MCP
+
+Use this order for reliable debugging:
+
+1. Start deterministic webterm:
+
+```bash
+scripts/dev-web.sh
+```
+
+2. In Playwright MCP:
+
+- `browser_navigate` to `http://127.0.0.1:7681/`
+- `browser_snapshot` to get the `Terminal input` textbox ref
+- `browser_type` into the textbox (`submit: true`) for terminal commands
+- `browser_press_key` for global keys (`F1`, `F2`, `F4`, `F5`, `F6`, `F10`)
+- `browser_take_screenshot` after state changes
+
+3. If function keys are not honored by host terminal path:
+
+- Use app fallback: press `Esc` twice quickly to quit
+- Use deterministic demo endpoint to force states:
+  - `GET http://127.0.0.1:17321/__dev/ready`
+  - `POST http://127.0.0.1:17321/__dev/demo` with `{"demo":"menu|playing|results_pass|results_fail|hints_open|journal_open|playable"}`
+
+If MCP cannot reach localhost from your environment:
+
+- This is an environment/network boundary, not an app bug.
+- Expose webterm on a reachable URL (tunnel/reverse proxy), then navigate MCP to that public URL.
+- Continue using the local dev API (`/__dev/ready`, `/__dev/demo`) for deterministic state control.
+
+## Playwright Test Harness
 
 ```bash
 cd e2e/playwright

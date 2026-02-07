@@ -233,6 +233,9 @@ func (a *App) startLevel(ctx context.Context, newRun bool) error {
 	}
 	a.logger.Info("sandbox.started", map[string]any{"container": handle.ContainerName(), "mock": handle.IsMock()})
 	a.handle = handle
+	if current := a.sandbox.CurrentEngine(); current != "" {
+		a.engine.Name = current
+	}
 
 	if newRun {
 		runID, err := a.store.StartLevelRun(ctx, state.LevelRun{

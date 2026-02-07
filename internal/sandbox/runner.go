@@ -20,6 +20,10 @@ func NewManager(mode string) *Manager {
 	return &Manager{mode: mode}
 }
 
+func (m *Manager) CurrentEngine() string {
+	return m.engine
+}
+
 func (m *Manager) Detect(ctx context.Context, forceEngine string) (EngineInfo, error) {
 	if m.mode == "mock" {
 		m.engine = "mock"
@@ -100,7 +104,27 @@ func (m *Manager) StartLevel(ctx context.Context, spec StartSpec) (Handle, error
 	args := buildRunArgs(engine, spec)
 	out, err := exec.CommandContext(ctx, engine, args...).CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("%s run failed: %s", engine, strings.TrimSpace(string(out)))
+		if m.mode == "auto" && engine == "podman" {
+			if errValidate := validateEngine(ctx, "docker"); errValidate == nil {
+				fallbackArgs := buildRunArgs("docker", spec)
+				fallbackOut, fallbackErr := exec.CommandContext(ctx, "docker", fallbackArgs...).CombinedOutput()
+				if fallbackErr == nil {
+					engine = "docker"
+					m.engine = "docker"
+					h.engine = "docker"
+				} else {
+					return nil, fmt.Errorf(
+						"podman run failed: %s; docker fallback failed: %s",
+						strings.TrimSpace(string(out)),
+						strings.TrimSpace(string(fallbackOut)),
+					)
+				}
+			} else {
+				return nil, fmt.Errorf("%s run failed: %s", engine, strings.TrimSpace(string(out)))
+			}
+		} else {
+			return nil, fmt.Errorf("%s run failed: %s", engine, strings.TrimSpace(string(out)))
+		}
 	}
 
 	shellProgram := spec.ShellProgram
@@ -171,8 +195,8 @@ func buildRunArgs(engine string, spec StartSpec) []string {
 	mountDataset := ""
 	mountWork := ""
 	if engine == "docker" {
-		mountDataset = fmt.Sprintf("type=bind,src=%s,dst=%s,ro", spec.DatasetDir, datasetMount)
-		mountWork = fmt.Sprintf("type=bind,src=%s,dst=%s,rw", spec.WorkDir, workMount)
+		mountDataset = fmt.Sprintf("type=bind,src=%s,dst=%s,readonly", spec.DatasetDir, datasetMount)
+		mountWork = fmt.Sprintf("type=bind,src=%s,dst=%s", spec.WorkDir, workMount)
 	} else {
 		selinux := ""
 		if spec.UseSELinuxZ {

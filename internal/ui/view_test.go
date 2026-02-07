@@ -9,7 +9,10 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
-type mockController struct{ resetCalls int }
+type mockController struct {
+	resetCalls int
+	quitCalls  int
+}
 
 func (m *mockController) OnCheck()                  {}
 func (m *mockController) OnReset()                  { m.resetCalls++ }
@@ -17,7 +20,7 @@ func (m *mockController) OnMenu()                   {}
 func (m *mockController) OnHints()                  {}
 func (m *mockController) OnGoal()                   {}
 func (m *mockController) OnJournal()                {}
-func (m *mockController) OnQuit()                   {}
+func (m *mockController) OnQuit()                   { m.quitCalls++ }
 func (m *mockController) OnResize(int, int)         {}
 func (m *mockController) OnTerminalInput([]byte)    {}
 func (m *mockController) OnChangeLevel()            {}
@@ -65,6 +68,33 @@ func TestOverlayAllowsModalKeyHandling(t *testing.T) {
 	ev := v.captureInput(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	if ev == nil {
 		t.Fatalf("expected non-escape keys to reach the active modal")
+	}
+}
+
+func TestSingleEscDoesNotQuit(t *testing.T) {
+	pane := term.NewTerminalPane(nil)
+	v := New(Options{TermPane: pane})
+	ctrl := &mockController{}
+	v.SetController(ctrl)
+
+	v.captureInput(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+
+	if ctrl.quitCalls != 0 {
+		t.Fatalf("expected single escape to not quit")
+	}
+}
+
+func TestDoubleEscQuits(t *testing.T) {
+	pane := term.NewTerminalPane(nil)
+	v := New(Options{TermPane: pane})
+	ctrl := &mockController{}
+	v.SetController(ctrl)
+
+	v.captureInput(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	v.captureInput(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+
+	if ctrl.quitCalls != 1 {
+		t.Fatalf("expected double escape to quit exactly once, got %d", ctrl.quitCalls)
 	}
 }
 

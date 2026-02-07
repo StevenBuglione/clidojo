@@ -22,6 +22,24 @@ scripts/dev-web.sh
 # open http://127.0.0.1:7681
 ```
 
+Stable browser-debug loop (ttyd + tmux):
+
+```bash
+make webterm
+# or for a clean rebuild/restart while iterating:
+make webterm-restart
+```
+
+Environment overrides:
+
+```bash
+CLIDOJO_WEBTERM_PORT=7682 CLIDOJO_WEBTERM_SESSION=clidojo-review make webterm-restart
+```
+
+Note for Playwright MCP in remote/sandboxed environments: if MCP cannot reach
+`127.0.0.1`, expose the webterm on a reachable URL (tunnel/reverse proxy),
+then point the browser tool at that public URL.
+
 Playwright screenshot scaffolding lives in `e2e/playwright`.
 
 Run screenshots:

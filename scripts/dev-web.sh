@@ -10,8 +10,11 @@ cd "$REPO_ROOT"
 
 go build -o bin/clidojo ./cmd/clidojo
 
-ttyd -p "$PORT" -W \
-  -t "cursorBlink=false" \
-  -t "fontSize=14" \
-  -t "titleFixed=CLI Dojo Dev" \
-  ./bin/clidojo --dev --sandbox=mock --dev-http="$DEV_HTTP"
+export CLIDOJO_WEBTERM_HOST="${CLIDOJO_WEBTERM_HOST:-127.0.0.1}"
+export CLIDOJO_WEBTERM_PORT="${PORT}"
+export CLIDOJO_WEBTERM_SESSION="${CLIDOJO_WEBTERM_SESSION:-clidojo-dev-web}"
+export CLIDOJO_WEBTERM_RESET_SESSION="${CLIDOJO_WEBTERM_RESET_SESSION:-1}"
+export CLIDOJO_WEBTERM_CMD="${CLIDOJO_WEBTERM_CMD:-./bin/clidojo --dev --sandbox=mock --demo=playable --dev-http=${DEV_HTTP}}"
+export DEV_HTTP="${DEV_HTTP}"
+
+exec ./scripts/webterm.sh

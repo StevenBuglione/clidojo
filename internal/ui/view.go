@@ -61,6 +61,9 @@ type Root struct {
 	infoOpen      bool
 	referenceOpen bool
 	diffOpen      bool
+
+	lastEscAt     time.Time
+	escQuitWindow time.Duration
 }
 
 type Options struct {
@@ -77,6 +80,8 @@ func New(opts Options) *Root {
 		debug: opts.Debug,
 		term:  opts.TermPane,
 		state: PlayingState{ModeLabel: "Free Play", StartedAt: time.Now()},
+		// Double-Esc provides an emergency escape hatch in hosts where F-keys are unreliable.
+		escQuitWindow: 800 * time.Millisecond,
 	}
 
 	r.header = tview.NewTextView().SetDynamicColors(true)
@@ -588,10 +593,15 @@ func (r *Root) captureInput(ev *tcell.EventKey) *tcell.EventKey {
 
 	if r.overlayActive() {
 		if ev.Key() == tcell.KeyEsc {
+			r.lastEscAt = time.Time{}
 			r.closeTopOverlay()
 			return nil
 		}
 		return ev
+	}
+
+	if ev.Key() != tcell.KeyEsc {
+		r.lastEscAt = time.Time{}
 	}
 
 	if ev.Key() == tcell.KeyTab {
@@ -659,6 +669,16 @@ func (r *Root) captureInput(ev *tcell.EventKey) *tcell.EventKey {
 			r.term.ToggleScrollback()
 			return nil
 		}
+		now := time.Now()
+		if !r.lastEscAt.IsZero() && now.Sub(r.lastEscAt) <= r.escQuitWindow {
+			r.lastEscAt = time.Time{}
+			if r.ctrl != nil {
+				r.ctrl.OnQuit()
+			}
+			return nil
+		}
+		r.lastEscAt = now
+		r.FlashStatus("Press Esc again quickly to quit")
 	}
 
 	if ev.Key() == tcell.KeyPgUp && ev.Modifiers()&tcell.ModShift != 0 {
