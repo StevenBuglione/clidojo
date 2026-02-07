@@ -1,0 +1,10 @@
+dog
+cat
+fox
+dog
+cat
+alpaca
+cat
+dog
+koala
+fox

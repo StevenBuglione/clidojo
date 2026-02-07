@@ -1,0 +1,63 @@
+kind: pack
+schema_version: 1
+
+pack_id: builtin-core
+name: "CLI Dojo: Core Foundations"
+version: "0.1.0"
+description_md: |
+  A starter pack focused on pipes, text processing, and safe file handling.
+
+image:
+  ref: "clidojo/builtin-core:0.1.0"
+  build:
+    context_dir: "image"
+    dockerfile: "Dockerfile"
+    args: {}
+  pull: false
+
+defaults:
+  shell:
+    program: "bash"
+    args: ["--login"]
+  sandbox:
+    network: "none"
+    read_only_root: true
+    cpu: 1.0
+    memory_mb: 768
+    pids_limit: 256
+    tmpfs:
+      - mount: "/tmp"
+        options: "rw,noexec,nosuid,size=128m"
+      - mount: "/run"
+        options: "rw,noexec,nosuid,size=16m"
+  ui:
+    hud_width: 42
+    min_cols: 90
+    min_rows: 24
+
+tools:
+  - tool_id: pipes
+    name: "Pipes & Redirection"
+    summary_md: "Combine commands using stdin/stdout and redirection."
+    difficulty_bias: 1
+  - tool_id: find
+    name: "find"
+    summary_md: "Search filesystem trees safely and efficiently."
+    difficulty_bias: 2
+  - tool_id: awk
+    name: "awk"
+    summary_md: "Text processing and field extraction."
+    difficulty_bias: 2
+
+levels:
+  - level_id: level-001-pipes-101
+    path: "levels/level-001-pipes-101"
+    enabled: true
+  - level_id: level-002-find-safe
+    path: "levels/level-002-find-safe"
+    enabled: true
+  - level_id: level-003-top-ips
+    path: "levels/level-003-top-ips"
+    enabled: true
+
+extensions: {}

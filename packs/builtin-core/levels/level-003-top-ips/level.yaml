@@ -1,0 +1,110 @@
+kind: level
+schema_version: 1
+
+level_id: level-003-top-ips
+title: "Pipeline Boss: Top 5 IPs"
+summary_md: "Extract, count, sort, format."
+difficulty: 3
+estimated_minutes: 10
+tags: ["awk", "sort", "uniq", "pipes", "logs"]
+tool_focus: ["awk", "sort", "uniq"]
+
+filesystem:
+  dataset:
+    source: dir
+    path: "dataset"
+    mount_point: "/levels/current"
+    read_only: true
+  work:
+    mount_point: "/work"
+    initial_layout:
+      mkdirs: []
+      copy_from_dataset: []
+
+objective:
+  bullets:
+    - "Read /levels/current/access.log"
+    - "Compute the top 5 client IPs by request count"
+    - "Write /work/top_ips.txt with 5 lines: COUNT<space>IP"
+    - "Sorted by COUNT descending"
+  success_hint_md: |
+    Typical pipeline:
+    `awk '{print $1}' access.log | sort | uniq -c | sort -nr | head -n 5`
+
+hints:
+  - hint_id: h1
+    text_md: "The IP is the first field in this log file: `awk '{print $1}' ...`"
+    unlock: { after_seconds: 0 }
+  - hint_id: h2
+    text_md: "`uniq -c` counts adjacent duplicates, so sort first."
+    unlock: { after_seconds: 60 }
+  - hint_id: h3
+    text_md: "Use `head -n 5` to keep only the top 5 results."
+    unlock: { after_seconds: 120 }
+
+checks:
+  - id: out_exists
+    type: file_exists
+    description: "Create /work/top_ips.txt"
+    required: true
+    path: "/work/top_ips.txt"
+
+  - id: out_lines_5
+    type: file_lines_count
+    description: "Exactly 5 lines"
+    required: true
+    path: "/work/top_ips.txt"
+    equals: 5
+    on_fail_message: "Expected exactly 5 lines."
+
+  - id: out_format
+    type: file_lines_match_regex
+    description: "Format: COUNT IP"
+    required: true
+    path: "/work/top_ips.txt"
+    pattern: "^\\d+\\s+\\d{1,3}(?:\\.\\d{1,3}){3}$"
+    mode: all_lines
+    on_fail_message: "Each line must look like: 12 192.168.1.10"
+
+  - id: out_sorted
+    type: file_sorted
+    description: "Sorted by COUNT descending"
+    required: true
+    path: "/work/top_ips.txt"
+    order: desc
+    key: numeric
+    split:
+      kind: whitespace
+    column: 1
+    on_fail_message: "Counts must be sorted descending."
+
+  - id: out_matches_expected
+    type: command_output_equals_file
+    description: "Matches expected top 5 derived from dataset"
+    required: true
+    command: |
+      awk '{print $1}' /levels/current/access.log \
+        | sort \
+        | uniq -c \
+        | sort -nr \
+        | head -n 5 \
+        | awk '{print $1 " " $2}'
+    compare_to_path: "/work/top_ips.txt"
+    timeout_seconds: 3
+    normalize:
+      newlines: any
+      trim_trailing_whitespace: true
+      trim_final_newline: true
+    on_fail_message: "Your top 5 list doesn't match expected."
+
+reference_solutions:
+  - solution_id: sol1
+    title: "Canonical pipeline"
+    script_sh: |
+      awk '{print $1}' /levels/current/access.log \
+        | sort \
+        | uniq -c \
+        | sort -nr \
+        | head -n 5 \
+        | awk '{print $1 " " $2}' \
+        > /work/top_ips.txt

@@ -1,0 +1,26 @@
+export HISTFILE=/work/.dojo_bash_history
+export HISTSIZE=5000
+export HISTFILESIZE=5000
+shopt -s histappend
+
+export PS1="player@dojo:\w$ "
+
+__dojo_log_last_cmd() {
+  local last
+  last="$(history 1 | sed 's/^[ ]*[0-9]\+[ ]*//')"
+  if [ -n "$last" ]; then
+    printf "%s\t%s\n" "$(date +%s)" "$last" >> /work/.dojo_cmdlog
+  fi
+}
+PROMPT_COMMAND="__dojo_log_last_cmd; history -a"
+
+cd /work 2>/dev/null || true
+
+dojo() {
+  case "$1" in
+    goal) echo "Use the left HUD (Goal) in the TUI." ;;
+    checks) echo "Use the left HUD (Checks) in the TUI." ;;
+    help) echo "F1 Hints | F5 Check | F6 Reset | F10 Menu" ;;
+    *) echo "dojo {goal|checks|help}" ;;
+  esac
+}

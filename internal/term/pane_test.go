@@ -1,0 +1,38 @@
+package term
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/gdamore/tcell/v2"
+)
+
+func TestDrawWithoutSession(t *testing.T) {
+	s := tcell.NewSimulationScreen("UTF-8")
+	if err := s.Init(); err != nil {
+		t.Fatalf("init sim screen: %v", err)
+	}
+	defer s.Fini()
+	s.SetSize(80, 24)
+
+	p := NewTerminalPane(nil)
+	p.SetRect(0, 0, 80, 24)
+	p.Draw(s)
+
+	line := readLine(s, 1, 1, 40)
+	if !strings.Contains(line, "No terminal session") {
+		t.Fatalf("expected placeholder text, got %q", line)
+	}
+}
+
+func readLine(s tcell.SimulationScreen, x, y, w int) string {
+	var b strings.Builder
+	for i := 0; i < w; i++ {
+		r, _, _, _ := s.GetContent(x+i, y)
+		if r == 0 {
+			r = ' '
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}

@@ -1,0 +1,304 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CLI Dojo LevelSpec v1",
+  "type": "object",
+  "required": [
+    "kind",
+    "schema_version",
+    "level_id",
+    "title",
+    "difficulty",
+    "estimated_minutes",
+    "filesystem",
+    "objective",
+    "checks"
+  ],
+  "properties": {
+    "kind": { "const": "level" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "level_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$" },
+    "title": { "type": "string", "minLength": 1 },
+    "summary_md": { "type": "string" },
+    "description_md": { "type": "string" },
+    "difficulty": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "estimated_minutes": { "type": "integer", "minimum": 1 },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "tool_focus": { "type": "array", "items": { "type": "string" } },
+    "image": {
+      "type": "object",
+      "properties": {
+        "ref": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "shell": {
+      "type": "object",
+      "properties": {
+        "program": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string" },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "sandbox": {
+      "type": "object",
+      "properties": {
+        "network": { "enum": ["none", "inherit"] },
+        "read_only_root": { "type": "boolean" },
+        "cpu": { "type": "number", "exclusiveMinimum": 0 },
+        "memory_mb": { "type": "integer", "minimum": 1 },
+        "pids_limit": { "type": "integer", "minimum": 1 },
+        "tmpfs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["mount", "options"],
+            "properties": {
+              "mount": { "type": "string" },
+              "options": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "filesystem": {
+      "type": "object",
+      "required": ["dataset", "work"],
+      "properties": {
+        "dataset": {
+          "type": "object",
+          "required": ["source", "path"],
+          "properties": {
+            "source": { "enum": ["dir", "generator"] },
+            "path": { "type": "string", "minLength": 1 },
+            "mount_point": { "type": "string", "pattern": "^/" },
+            "read_only": { "type": "boolean" },
+            "generator": {
+              "type": "object",
+              "required": ["command"],
+              "properties": {
+                "command": { "type": "string" },
+                "args": { "type": "array", "items": { "type": "string" } },
+                "seed": { "type": "integer" }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "work": {
+          "type": "object",
+          "properties": {
+            "mount_point": { "type": "string", "pattern": "^/" },
+            "initial_layout": {
+              "type": "object",
+              "properties": {
+                "mkdirs": { "type": "array", "items": { "type": "string" } },
+                "copy_from_dataset": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["from", "to"],
+                    "properties": {
+                      "from": { "type": "string" },
+                      "to": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "objective": {
+      "type": "object",
+      "required": ["bullets"],
+      "properties": {
+        "bullets": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "success_hint_md": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "hints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["hint_id", "text_md"],
+        "properties": {
+          "hint_id": { "type": "string", "minLength": 1 },
+          "text_md": { "type": "string", "minLength": 1 },
+          "unlock": {
+            "type": "object",
+            "properties": {
+              "after_seconds": { "type": "integer", "minimum": 0 },
+              "after_failed_checks": { "type": "integer", "minimum": 0 },
+              "after_reveals": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": true
+          },
+          "cost_points": { "type": "integer" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "allOf": [
+          {
+            "type": "object",
+            "required": ["id", "type", "description"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "type": { "type": "string" },
+              "description": { "type": "string", "minLength": 1 },
+              "required": { "type": "boolean" },
+              "points": { "type": "integer" },
+              "on_fail_message": { "type": "string" },
+              "on_pass_message": { "type": "string" }
+            },
+            "additionalProperties": true
+          },
+          {
+            "oneOf": [
+              {
+                "properties": {
+                  "type": { "const": "file_exists" },
+                  "path": { "type": "string", "pattern": "^/" }
+                },
+                "required": ["path"]
+              },
+              {
+                "properties": {
+                  "type": { "const": "file_text_exact" },
+                  "path": { "type": "string", "pattern": "^/" },
+                  "expected": { "type": "string" }
+                },
+                "required": ["path", "expected"]
+              },
+              {
+                "properties": {
+                  "type": { "const": "file_lines_count" },
+                  "path": { "type": "string", "pattern": "^/" },
+                  "equals": { "type": "integer", "minimum": 0 },
+                  "min": { "type": "integer", "minimum": 0 },
+                  "max": { "type": "integer", "minimum": 0 }
+                },
+                "required": ["path"]
+              },
+              {
+                "properties": {
+                  "type": { "const": "file_lines_match_regex" },
+                  "path": { "type": "string", "pattern": "^/" },
+                  "pattern": { "type": "string", "minLength": 1 },
+                  "mode": { "enum": ["all_lines", "any_line", "min_matches"] },
+                  "min_matches": { "type": "integer", "minimum": 0 }
+                },
+                "required": ["path", "pattern"]
+              },
+              {
+                "properties": {
+                  "type": { "const": "file_sorted" },
+                  "path": { "type": "string", "pattern": "^/" },
+                  "order": { "enum": ["asc", "desc"] },
+                  "key": { "enum": ["lex", "numeric", "human"] }
+                },
+                "required": ["path", "order", "key"]
+              },
+              {
+                "properties": {
+                  "type": { "const": "command_output_equals_file" },
+                  "command": { "type": "string", "minLength": 1 },
+                  "compare_to_path": { "type": "string", "pattern": "^/" },
+                  "timeout_seconds": { "type": "integer", "minimum": 1 }
+                },
+                "required": ["command", "compare_to_path"]
+              },
+              {
+                "properties": {
+                  "type": { "const": "cmdlog_contains_regex" },
+                  "pattern": { "type": "string", "minLength": 1 },
+                  "min_count": { "type": "integer", "minimum": 1 }
+                },
+                "required": ["pattern"]
+              },
+              {
+                "properties": {
+                  "type": { "const": "cmdlog_forbids_regex" },
+                  "pattern": { "type": "string", "minLength": 1 }
+                },
+                "required": ["pattern"]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "scoring": {
+      "type": "object",
+      "properties": {
+        "base_points": { "type": "integer" },
+        "time_grace_seconds": { "type": "integer", "minimum": 0 },
+        "time_penalty_per_second": { "type": "integer", "minimum": 0 },
+        "hint_penalty_points": { "type": "integer", "minimum": 0 },
+        "reset_penalty_points": { "type": "integer", "minimum": 0 },
+        "cmdlog_bonuses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "description", "pattern", "points"],
+            "properties": {
+              "id": { "type": "string" },
+              "description": { "type": "string" },
+              "pattern": { "type": "string" },
+              "points": { "type": "integer" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "reference_solutions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["solution_id", "title", "script_sh"],
+        "properties": {
+          "solution_id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "script_sh": { "type": "string", "minLength": 1 },
+          "explanation_md": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": true
+      }
+    },
+    "ui": {
+      "type": "object",
+      "properties": {
+        "recommended_cols": { "type": "integer", "minimum": 1 },
+        "recommended_rows": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": true
+    },
+    "extensions": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": true
+}

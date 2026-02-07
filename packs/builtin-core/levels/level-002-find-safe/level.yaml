@@ -1,0 +1,107 @@
+kind: level
+schema_version: 1
+
+level_id: level-002-find-safe
+title: "find Safe: Count ERROR lines in messy filenames"
+summary_md: "Avoid unsafe find parsing. Handle spaces and weird names."
+difficulty: 2
+estimated_minutes: 8
+tags: ["find", "xargs", "spaces", "safety"]
+tool_focus: ["find", "grep", "xargs"]
+
+filesystem:
+  dataset:
+    source: dir
+    path: "dataset"
+    mount_point: "/levels/current"
+    read_only: true
+  work:
+    mount_point: "/work"
+    initial_layout:
+      mkdirs: []
+      copy_from_dataset: []
+
+objective:
+  bullets:
+    - "Search all *.log files under /levels/current/logs (including subdirectories)."
+    - "Count how many lines contain the literal text 'ERROR' (case-sensitive)."
+    - "Write the number and a trailing newline to /work/error_lines.txt"
+  success_hint_md: |
+    Safe approaches include:
+    - `find ... -print0 | xargs -0 grep -h 'ERROR' | wc -l`
+    - `find ... -name '*.log' -exec grep -h 'ERROR' {} + | wc -l`
+
+hints:
+  - hint_id: h1
+    text_md: |
+      Start by listing matching files:
+      `find /levels/current/logs -name '*.log' -type f`
+    unlock: { after_seconds: 0 }
+  - hint_id: h2
+    text_md: |
+      `-exec ... {} +` is safe for spaces in filenames.
+    unlock: { after_seconds: 60 }
+  - hint_id: h3
+    text_md: |
+      If you use xargs, use null separation:
+      `find ... -print0 | xargs -0 ...`
+    unlock: { after_seconds: 120 }
+
+checks:
+  - id: used_find
+    type: cmdlog_contains_regex
+    description: "Use find at least once"
+    required: true
+    pattern: "\\bfind\\b"
+    min_count: 1
+    on_fail_message: "This level is about find; use it at least once."
+
+  - id: forbid_unsafe_find_loop
+    type: cmdlog_forbids_regex
+    description: "Avoid unsafe: for f in $(find ...)"
+    required: true
+    pattern: "for\\s+\\w+\\s+in\\s+\\$\\(\\s*find\\b"
+    on_fail_message: "That pattern breaks on spaces/newlines in filenames."
+
+  - id: out_exists
+    type: file_exists
+    description: "Create /work/error_lines.txt"
+    required: true
+    path: "/work/error_lines.txt"
+
+  - id: out_exact
+    type: file_text_exact
+    description: "Correct ERROR line count"
+    required: true
+    path: "/work/error_lines.txt"
+    expected: |
+      7
+    normalize:
+      newlines: any
+      trim_trailing_whitespace: true
+      trim_final_newline: true
+    on_fail_message: "Incorrect count. Make sure you're scanning all *.log files recursively."
+
+  - id: print0_bonus
+    type: cmdlog_contains_regex
+    description: "Bonus: used -print0 (null-safe find)"
+    required: false
+    points: 75
+    pattern: "\\bfind\\b.*-print0\\b"
+    min_count: 1
+
+reference_solutions:
+  - solution_id: sol1
+    title: "Safe with -exec"
+    script_sh: |
+      find /levels/current/logs -type f -name '*.log' \
+        -exec grep -h 'ERROR' {} + \
+        | wc -l > /work/error_lines.txt
+    explanation_md: "`-exec ... {} +` is safe for spaces; grep outputs matching lines; wc counts them."
+  - solution_id: sol2
+    title: "Safe with -print0 + xargs -0"
+    script_sh: |
+      find /levels/current/logs -type f -name '*.log' -print0 \
+        | xargs -0 grep -h 'ERROR' \
+        | wc -l > /work/error_lines.txt
+    explanation_md: "Null-delimited paths are robust; xargs -0 consumes them safely."

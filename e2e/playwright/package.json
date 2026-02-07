@@ -1,0 +1,12 @@
+{
+  "name": "clidojo-e2e",
+  "private": true,
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "wait-on": "^7.2.0"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "update-snapshots": "playwright test --update-snapshots"
+  }
+}

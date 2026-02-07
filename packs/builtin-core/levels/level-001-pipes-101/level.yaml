@@ -1,0 +1,103 @@
+kind: level
+schema_version: 1
+
+level_id: level-001-pipes-101
+title: "Pipes 101: Count the Animals"
+summary_md: "Learn a basic pipeline: sort → uniq -c → sort."
+difficulty: 1
+estimated_minutes: 5
+tags: ["pipes", "sort", "uniq", "text"]
+tool_focus: ["sort", "uniq"]
+
+filesystem:
+  dataset:
+    source: dir
+    path: "dataset"
+    mount_point: "/levels/current"
+    read_only: true
+  work:
+    mount_point: "/work"
+    initial_layout:
+      mkdirs: []
+      copy_from_dataset: []
+
+objective:
+  bullets:
+    - "Read /levels/current/animals.txt"
+    - "Create /work/animal_counts.txt with counts per animal, sorted by count DESC"
+    - "Format each line as: COUNT<TAB>ANIMAL (tab-separated)"
+  success_hint_md: |
+    Nice. A canonical solution is:
+    `sort | uniq -c | sort -nr | awk '{print $1 "\\t" $2}'`
+
+hints:
+  - hint_id: h1
+    text_md: |
+      Try a pipeline like:
+      `sort animals.txt | uniq -c`
+    unlock: { after_seconds: 0 }
+  - hint_id: h2
+    text_md: |
+      `sort -nr` sorts numerically (descending).
+    unlock: { after_seconds: 45 }
+  - hint_id: h3
+    text_md: |
+      `uniq -c` prefixes counts with spaces. Use awk to format with a TAB:
+      `awk '{print $1 "\\t" $2}'`
+    unlock: { after_seconds: 90 }
+
+checks:
+  - id: out_exists
+    type: file_exists
+    description: "Create /work/animal_counts.txt"
+    required: true
+    path: "/work/animal_counts.txt"
+    on_fail_message: "No /work/animal_counts.txt found."
+
+  - id: content_exact
+    type: file_text_exact
+    description: "Output matches expected counts + formatting"
+    required: true
+    path: "/work/animal_counts.txt"
+    expected: |
+      3	cat
+      3	dog
+      2	fox
+      1	alpaca
+      1	koala
+    normalize:
+      newlines: any
+      trim_trailing_whitespace: true
+      trim_final_newline: true
+    on_fail_message: "Your counts/format do not match expected."
+
+  - id: no_useless_cat_bonus
+    type: cmdlog_forbids_regex
+    description: "Bonus: avoid useless cat (cat file | ...)"
+    required: false
+    points: 50
+    pattern: "\\bcat\\s+\\S+\\s*\\|"
+    on_fail_message: "You used a 'useless cat' pattern."
+
+scoring:
+  base_points: 1000
+  time_grace_seconds: 60
+  time_penalty_per_second: 1
+  hint_penalty_points: 80
+  reset_penalty_points: 120
+  cmdlog_bonuses:
+    - id: pipe_bonus
+      description: "Used at least one pipe (|)"
+      pattern: "\\|"
+      points: 50
+
+reference_solutions:
+  - solution_id: sol1
+    title: "Canonical pipeline"
+    script_sh: |
+      sort /levels/current/animals.txt \
+        | uniq -c \
+        | sort -nr \
+        | awk '{print $1 "\t" $2}' \
+        > /work/animal_counts.txt
+    explanation_md: "Sort groups identical lines, uniq counts them, sort orders by count, awk formats."
