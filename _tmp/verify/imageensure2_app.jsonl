@@ -1,0 +1,18 @@
+{"level":"info","msg":"app.start","sandbox":"docker","session":"97935f3a-67eb-4a11-bcb5-5da8df14f280","ts":"2026-02-08T07:17:08.885494284Z"}
+{"engine":"docker","level":"info","msg":"engine.detected","ts":"2026-02-08T07:17:09.325405825Z","version":"Docker version 29.2.0, build 0b9d198"}
+{"active_level":false,"level":"info","msg":"ui.level_select.begin","ts":"2026-02-08T07:17:11.837797199Z"}
+{"level":"info","msg":"ui.level_select.clear_overlays","ts":"2026-02-08T07:17:11.83786072Z"}
+{"level":"level-001-pipes-101","msg":"ui.level_select.switch_screen","pack":"builtin-core","ts":"2026-02-08T07:17:11.842678606Z"}
+{"level":"info","msg":"ui.level_select.state","ts":"2026-02-08T07:17:11.84425455Z"}
+{"level":"info","msg":"ui.level_select.persist","ts":"2026-02-08T07:17:11.84428043Z"}
+{"level":"info","msg":"ui.level_select.done","ts":"2026-02-08T07:17:11.844398706Z"}
+{"level":"info","msg":"level.stage_workdir","ts":"2026-02-08T07:17:13.845703797Z","workdir":"/tmp/clidojo-imageensure2-15916/work/97935f3a-67eb-4a11-bcb5-5da8df14f280/level-001-pipes-101"}
+{"engine":"docker","image":"clidojo/builtin-core:0.1.0","level":"info","msg":"image.ensure.build","pack":"builtin-core","ts":"2026-02-08T07:17:13.846286281Z"}
+{"container":"clidojo_97935f3a_level-001-pipes-101","level":"info","mock":false,"msg":"sandbox.started","ts":"2026-02-08T07:17:15.531186313Z"}
+{"level":"info","mode":"pty","msg":"term.mode","ts":"2026-02-08T07:17:15.546642159Z"}
+{"level":"level-001-pipes-101","msg":"term.pty.started","ts":"2026-02-08T07:17:15.547327793Z"}
+{"level":"level-001-pipes-101","msg":"level.start.sync_state","ts":"2026-02-08T07:17:15.547353402Z"}
+{"level":"level-001-pipes-101","msg":"level.start.set_screen","ts":"2026-02-08T07:17:15.547387808Z"}
+{"level":"level-001-pipes-101","msg":"level.start.flash","ts":"2026-02-08T07:17:15.549134899Z"}
+{"level":"level-001-pipes-101","msg":"level.start.persist_state","ts":"2026-02-08T07:17:15.550524456Z"}
+{"level":"level-001-pipes-101","msg":"level.start.done","ts":"2026-02-08T07:17:15.550839839Z"}

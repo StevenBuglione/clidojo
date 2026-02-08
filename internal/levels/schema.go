@@ -90,27 +90,30 @@ type PackLevelRef struct {
 }
 
 type Level struct {
-	Kind               string              `yaml:"kind"`
-	SchemaVersion      int                 `yaml:"schema_version"`
-	LevelID            string              `yaml:"level_id"`
-	Title              string              `yaml:"title"`
-	SummaryMD          string              `yaml:"summary_md"`
-	DescriptionMD      string              `yaml:"description_md"`
-	Difficulty         int                 `yaml:"difficulty"`
-	EstimatedMinutes   int                 `yaml:"estimated_minutes"`
-	Tags               []string            `yaml:"tags"`
-	ToolFocus          []string            `yaml:"tool_focus"`
-	Image              ImageOverride       `yaml:"image"`
-	Shell              ShellSpec           `yaml:"shell"`
-	Sandbox            SandboxSpec         `yaml:"sandbox"`
-	Filesystem         FilesystemSpec      `yaml:"filesystem"`
-	Objective          ObjectiveSpec       `yaml:"objective"`
-	Hints              []HintSpec          `yaml:"hints"`
-	Checks             []CheckSpec         `yaml:"checks"`
-	Scoring            ScoringSpec         `yaml:"scoring"`
-	ReferenceSolutions []ReferenceSolution `yaml:"reference_solutions"`
-	UI                 UISpec              `yaml:"ui"`
-	Extensions         map[string]any      `yaml:"extensions"`
+	Kind               string               `yaml:"kind"`
+	SchemaVersion      int                  `yaml:"schema_version"`
+	LevelID            string               `yaml:"level_id"`
+	Title              string               `yaml:"title"`
+	SummaryMD          string               `yaml:"summary_md"`
+	DescriptionMD      string               `yaml:"description_md"`
+	Difficulty         int                  `yaml:"difficulty"`
+	EstimatedMinutes   int                  `yaml:"estimated_minutes"`
+	Tags               []string             `yaml:"tags"`
+	ToolFocus          []string             `yaml:"tool_focus"`
+	Image              ImageOverride        `yaml:"image"`
+	Shell              ShellSpec            `yaml:"shell"`
+	Sandbox            SandboxSpec          `yaml:"sandbox"`
+	Filesystem         FilesystemSpec       `yaml:"filesystem"`
+	Objective          ObjectiveSpec        `yaml:"objective"`
+	Hints              []HintSpec           `yaml:"hints"`
+	Checks             []CheckSpec          `yaml:"checks"`
+	Scoring            ScoringSpec          `yaml:"scoring"`
+	ReferenceSolutions []ReferenceSolution  `yaml:"reference_solutions"`
+	UI                 UISpec               `yaml:"ui"`
+	XAutoCheck         AutoCheckExtension   `yaml:"x-autocheck"`
+	XProgression       ProgressionExtension `yaml:"x-progression"`
+	XTeaching          TeachingExtension    `yaml:"x-teaching"`
+	Extensions         map[string]any       `yaml:"extensions"`
 
 	Path            string `yaml:"-"`
 	DatasetHostPath string `yaml:"-"`
@@ -242,6 +245,29 @@ type ReferenceSolution struct {
 	Tags          []string `yaml:"tags"`
 }
 
+type AutoCheckExtension struct {
+	Mode       string `yaml:"mode"`
+	DebounceMS int    `yaml:"debounce_ms"`
+	QuietFail  *bool  `yaml:"quiet_fail"`
+}
+
+type ProgressionExtension struct {
+	Tier          int                `yaml:"tier"`
+	Prerequisites []string           `yaml:"prerequisites"`
+	Mastery       ProgressionMastery `yaml:"mastery"`
+}
+
+type ProgressionMastery struct {
+	MinScore  int `yaml:"min_score"`
+	MaxHints  int `yaml:"max_hints"`
+	MaxResets int `yaml:"max_resets"`
+}
+
+type TeachingExtension struct {
+	Concepts   []string `yaml:"concepts"`
+	ReviewDays []int    `yaml:"review_days"`
+}
+
 func (p Pack) Validate() error {
 	if p.Kind != PackKind {
 		return fmt.Errorf("kind must be %q", PackKind)
@@ -350,6 +376,22 @@ func (l Level) Validate() error {
 	}
 	if requiredCount == 0 {
 		return fmt.Errorf("level must have at least one required check")
+	}
+	switch l.XAutoCheck.Mode {
+	case "", "off", "command_debounce", "command_and_fs_debounce":
+	default:
+		return fmt.Errorf("invalid x-autocheck.mode %q", l.XAutoCheck.Mode)
+	}
+	if l.XAutoCheck.DebounceMS < 0 {
+		return fmt.Errorf("x-autocheck.debounce_ms must be >= 0")
+	}
+	if l.XProgression.Tier < 0 {
+		return fmt.Errorf("x-progression.tier must be >= 0")
+	}
+	for _, day := range l.XTeaching.ReviewDays {
+		if day <= 0 {
+			return fmt.Errorf("x-teaching.review_days entries must be > 0")
+		}
 	}
 	return nil
 }

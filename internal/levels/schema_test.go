@@ -61,3 +61,51 @@ func TestLevelValidateRejectsRelativeCheckPath(t *testing.T) {
 		t.Fatalf("expected validation error")
 	}
 }
+
+func TestLevelValidateRejectsInvalidAutoCheckMode(t *testing.T) {
+	required := true
+	l := Level{
+		Kind:             LevelKind,
+		SchemaVersion:    1,
+		LevelID:          "level-xyz",
+		Title:            "x",
+		Difficulty:       1,
+		EstimatedMinutes: 1,
+		Filesystem: FilesystemSpec{
+			Dataset: DatasetSpec{Source: "dir", Path: "dataset", MountPoint: "/levels/current"},
+			Work:    WorkSpec{MountPoint: "/work"},
+		},
+		Objective: ObjectiveSpec{Bullets: []string{"do thing"}},
+		Checks: []CheckSpec{
+			{ID: "c1", Type: "file_exists", Description: "desc", Required: &required, Path: "/work/out.txt"},
+		},
+		XAutoCheck: AutoCheckExtension{Mode: "boom"},
+	}
+	if err := l.Validate(); err == nil {
+		t.Fatalf("expected validation error")
+	}
+}
+
+func TestLevelValidateRejectsInvalidReviewDay(t *testing.T) {
+	required := true
+	l := Level{
+		Kind:             LevelKind,
+		SchemaVersion:    1,
+		LevelID:          "level-uvw",
+		Title:            "x",
+		Difficulty:       1,
+		EstimatedMinutes: 1,
+		Filesystem: FilesystemSpec{
+			Dataset: DatasetSpec{Source: "dir", Path: "dataset", MountPoint: "/levels/current"},
+			Work:    WorkSpec{MountPoint: "/work"},
+		},
+		Objective: ObjectiveSpec{Bullets: []string{"do thing"}},
+		Checks: []CheckSpec{
+			{ID: "c1", Type: "file_exists", Description: "desc", Required: &required, Path: "/work/out.txt"},
+		},
+		XTeaching: TeachingExtension{ReviewDays: []int{1, 0}},
+	}
+	if err := l.Validate(); err == nil {
+		t.Fatalf("expected validation error")
+	}
+}

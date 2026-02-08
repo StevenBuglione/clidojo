@@ -1,0 +1,12 @@
+{"level":"info","msg":"app.start","sandbox":"docker","session":"0f51bb02-b272-4cc3-9c84-c5650180f8be","ts":"2026-02-08T07:24:18.875936898Z"}
+{"engine":"docker","level":"info","msg":"engine.detected","ts":"2026-02-08T07:24:19.264342115Z","version":"Docker version 29.2.0, build 0b9d198"}
+{"level":"info","msg":"level.stage_workdir","ts":"2026-02-08T07:24:21.829651422Z","workdir":"/tmp/clidojo-verify-verify_docker_1770535458_d/work/0f51bb02-b272-4cc3-9c84-c5650180f8be/level-001-pipes-101"}
+{"engine":"docker","image":"clidojo/builtin-core:0.1.0","level":"info","msg":"image.ensure.build","pack":"builtin-core","ts":"2026-02-08T07:24:21.830497518Z"}
+{"container":"clidojo_0f51bb02_level-001-pipes-101","level":"info","mock":false,"msg":"sandbox.started","ts":"2026-02-08T07:24:23.384486336Z"}
+{"level":"info","mode":"pty","msg":"term.mode","ts":"2026-02-08T07:24:23.406310373Z"}
+{"level":"level-001-pipes-101","msg":"term.pty.started","ts":"2026-02-08T07:24:23.407013895Z"}
+{"level":"level-001-pipes-101","msg":"level.start.sync_state","ts":"2026-02-08T07:24:23.407048131Z"}
+{"level":"level-001-pipes-101","msg":"level.start.set_screen","ts":"2026-02-08T07:24:23.40707342Z"}
+{"level":"level-001-pipes-101","msg":"level.start.flash","ts":"2026-02-08T07:24:23.411286331Z"}
+{"level":"level-001-pipes-101","msg":"level.start.persist_state","ts":"2026-02-08T07:24:23.41190382Z"}
+{"level":"level-001-pipes-101","msg":"level.start.done","ts":"2026-02-08T07:24:23.412173161Z"}

@@ -1,0 +1,50 @@
+ CLI Dojo | Free Play | builtin-core/level-001-pipes-101 | 42s | Engine: docker
+┌ HUD ───────────────────────────────────┐┌ Terminal ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│Objective                               ││player@dojo:/work$ printf '3\tcat\n3\tdog\n2\tfox\n1\talpaca\n1\tkoala\n' > /work/animal_counts.txt                           │
+│- Read /levels/current/animals.txt      ││player@dojo:/work$ ▌                                                                                                          │
+│- Create /work/animal_counts.txt with co││                                                                                                                              │
+│- When counts tie, sort by animal name A││                                                                                                                              │
+│- Format each line as: COUNT<TAB>ANIMAL ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│Session Goals                           ││                                                                                                                              │
+│- Finish the level                      ││                                                                                                                              │
+│- Use at most 3 hint(s)                 ││                                                                                                                              │
+│- Use at most 2 reset(s)                ││                                                                                                                              │
+│- Tar┌ Reference Solutions ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐     │
+│     │### Canonical pipeline                                                                                                                                      │     │
+│Check│sort /levels/current/animals.txt \                                                                                                                          │     │
+│✓ Cre│  | uniq -c \                                                                                                                                               │     │
+│✓ Out│  | sort -k1,1nr -k2,2 \                                                                                                                                    │     │
+│✓ Bon│  | awk '{print $1 "\t" $2}' \                                                                                                                              │     │
+│     │  > /work/animal_counts.txt                                                                                                                                 │     │
+│Hints│                                                                                                                                                            │     │
+│1. [a│Sort groups identical lines, uniq counts them, sort orders by count with name tie-break, awk formats.                                                       │     │
+│`sort│                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│2. [l│Ctrl+C: Copy text                                                                                                                                           │     │
+│3. [l│                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│Score│                                                                                                                                                            │     │
+│Curre│                                                                                                                                                            │     │
+│Hints│                                                                                                                                                            │     │
+│Strea│                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│Badge│                                                                                                                                                            │     │
+│- No │                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│     └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘     │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+└────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1 Hints • F2 Goal • F4 Journal • F5 Check • F6 Reset • F9 Scrollback • F10 Menu | PASS

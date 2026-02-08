@@ -1,0 +1,24 @@
+ CLI Dojo
+┌ Main Menu ─────────────┐┌ Overview ──────────────────────────────────────────┐
+│> Continue              ││CLI Dojo                                            │
+│  Daily Drill           ││                                                    │
+│  Level Select          ││Engine: docker                                      │
+│  Settings              ││Packs: 1  Levels: 3                                 │
+│  Stats                 ││Due Reviews: 0                                      │
+│  Quit                  ││Last Played: builtin-core / level-001-pipes-101     │
+│                        ││Runs: 1  Passes: 0  Attempts: 1  Resets: 0          │
+│                        ││Streak: 0                                           │
+│                        ││                                                    │
+│                        ││Tip:                                                │
+│                        ││Use Alt+b and Alt+f in bash to jump by words.       │
+│                        ││                                                    │
+│                        ││Action:                                             │
+│                        ││Continue your most recent level run.                │
+│                        ││                                                    │
+│                        ││                                                    │
+│                        ││                                                    │
+│                        ││                                                    │
+│                        ││                                                    │
+│                        ││                                                    │
+└────────────────────────┘└────────────────────────────────────────────────────┘
+

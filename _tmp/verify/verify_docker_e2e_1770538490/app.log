@@ -1,0 +1,11 @@
+{"level":"info","msg":"app.start","sandbox":"docker","session":"a2809939-ca3e-4f22-8d1d-73af8efa6e17","ts":"2026-02-08T08:14:50.970761906Z"}
+{"engine":"docker","level":"info","msg":"engine.detected","ts":"2026-02-08T08:14:51.436159147Z","version":"Docker version 29.2.0, build 0b9d198"}
+{"level":"info","msg":"level.stage_workdir","ts":"2026-02-08T08:14:54.957003348Z","workdir":"/home/sbuglione/.local/share/clidojo/work/a2809939-ca3e-4f22-8d1d-73af8efa6e17/level-003-top-ips"}
+{"container":"clidojo_a2809939_level-003-top-ips","level":"info","mock":false,"msg":"sandbox.started","ts":"2026-02-08T08:14:55.283542446Z"}
+{"level":"info","mode":"pty","msg":"term.mode","ts":"2026-02-08T08:14:55.302740513Z"}
+{"level":"level-003-top-ips","msg":"term.pty.started","ts":"2026-02-08T08:14:55.30320887Z"}
+{"level":"level-003-top-ips","msg":"level.start.sync_state","ts":"2026-02-08T08:14:55.303231243Z"}
+{"level":"level-003-top-ips","msg":"level.start.set_screen","ts":"2026-02-08T08:14:55.303247936Z"}
+{"level":"level-003-top-ips","msg":"level.start.flash","ts":"2026-02-08T08:14:55.303629505Z"}
+{"level":"level-003-top-ips","msg":"level.start.persist_state","ts":"2026-02-08T08:14:55.303925936Z"}
+{"level":"level-003-top-ips","msg":"level.start.done","ts":"2026-02-08T08:14:55.304174973Z"}

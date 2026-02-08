@@ -25,10 +25,11 @@ objective:
   bullets:
     - "Read /levels/current/animals.txt"
     - "Create /work/animal_counts.txt with counts per animal, sorted by count DESC"
+    - "When counts tie, sort by animal name ASC for deterministic output"
     - "Format each line as: COUNT<TAB>ANIMAL (tab-separated)"
   success_hint_md: |
     Nice. A canonical solution is:
-    `sort | uniq -c | sort -nr | awk '{print $1 "\\t" $2}'`
+    `sort | uniq -c | sort -k1,1nr -k2,2 | awk '{print $1 "\\t" $2}'`
 
 hints:
   - hint_id: h1
@@ -38,7 +39,8 @@ hints:
     unlock: { after_seconds: 0 }
   - hint_id: h2
     text_md: |
-      `sort -nr` sorts numerically (descending).
+      Use a deterministic tie-break:
+      `sort -k1,1nr -k2,2`
     unlock: { after_seconds: 45 }
   - hint_id: h3
     text_md: |
@@ -91,13 +93,30 @@ scoring:
       pattern: "\\|"
       points: 50
 
+x-autocheck:
+  mode: command_and_fs_debounce
+  debounce_ms: 800
+  quiet_fail: true
+
+x-progression:
+  tier: 1
+  prerequisites: []
+  mastery:
+    min_score: 700
+    max_hints: 3
+    max_resets: 2
+
+x-teaching:
+  concepts: ["pipes", "sort", "uniq", "formatting"]
+  review_days: [1, 3, 7]
+
 reference_solutions:
   - solution_id: sol1
     title: "Canonical pipeline"
     script_sh: |
       sort /levels/current/animals.txt \
         | uniq -c \
-        | sort -nr \
+        | sort -k1,1nr -k2,2 \
         | awk '{print $1 "\t" $2}' \
         > /work/animal_counts.txt
-    explanation_md: "Sort groups identical lines, uniq counts them, sort orders by count, awk formats."
+    explanation_md: "Sort groups identical lines, uniq counts them, sort orders by count with name tie-break, awk formats."

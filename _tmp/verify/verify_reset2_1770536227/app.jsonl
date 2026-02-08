@@ -1,0 +1,21 @@
+{"level":"info","msg":"app.start","sandbox":"docker","session":"e5ccda74-aaee-48bd-9dd4-96d9a4c86696","ts":"2026-02-08T07:37:07.352742092Z"}
+{"engine":"docker","level":"info","msg":"engine.detected","ts":"2026-02-08T07:37:07.788763298Z","version":"Docker version 29.2.0, build 0b9d198"}
+{"level":"info","msg":"level.stage_workdir","ts":"2026-02-08T07:37:10.319796216Z","workdir":"/tmp/clidojo-verify_reset2_1770536227/work/e5ccda74-aaee-48bd-9dd4-96d9a4c86696/level-001-pipes-101"}
+{"engine":"docker","image":"clidojo/builtin-core:0.1.0","level":"info","msg":"image.ensure.build","pack":"builtin-core","ts":"2026-02-08T07:37:10.320506492Z"}
+{"container":"clidojo_e5ccda74_level-001-pipes-101","level":"info","mock":false,"msg":"sandbox.started","ts":"2026-02-08T07:37:11.8398779Z"}
+{"level":"info","mode":"pty","msg":"term.mode","ts":"2026-02-08T07:37:11.850403934Z"}
+{"level":"level-001-pipes-101","msg":"term.pty.started","ts":"2026-02-08T07:37:11.851033034Z"}
+{"level":"level-001-pipes-101","msg":"level.start.sync_state","ts":"2026-02-08T07:37:11.851079645Z"}
+{"level":"level-001-pipes-101","msg":"level.start.set_screen","ts":"2026-02-08T07:37:11.851105515Z"}
+{"level":"level-001-pipes-101","msg":"level.start.flash","ts":"2026-02-08T07:37:11.852475517Z"}
+{"level":"level-001-pipes-101","msg":"level.start.persist_state","ts":"2026-02-08T07:37:11.854645409Z"}
+{"level":"level-001-pipes-101","msg":"level.start.done","ts":"2026-02-08T07:37:11.854863114Z"}
+{"level":"info","msg":"level.stage_workdir","ts":"2026-02-08T07:37:37.564904991Z","workdir":"/tmp/clidojo-verify_reset2_1770536227/work/e5ccda74-aaee-48bd-9dd4-96d9a4c86696/level-001-pipes-101"}
+{"container":"clidojo_e5ccda74_level-001-pipes-101","level":"info","mock":false,"msg":"sandbox.started","ts":"2026-02-08T07:37:37.862248694Z"}
+{"level":"info","mode":"pty","msg":"term.mode","ts":"2026-02-08T07:37:37.862304512Z"}
+{"level":"level-001-pipes-101","msg":"term.pty.started","ts":"2026-02-08T07:37:37.862912501Z"}
+{"level":"level-001-pipes-101","msg":"level.start.sync_state","ts":"2026-02-08T07:37:37.86293766Z"}
+{"level":"level-001-pipes-101","msg":"level.start.set_screen","ts":"2026-02-08T07:37:37.862955705Z"}
+{"level":"level-001-pipes-101","msg":"level.start.flash","ts":"2026-02-08T07:37:37.863932531Z"}
+{"level":"level-001-pipes-101","msg":"level.start.persist_state","ts":"2026-02-08T07:37:37.864796437Z"}
+{"level":"level-001-pipes-101","msg":"level.start.done","ts":"2026-02-08T07:37:37.864991565Z"}

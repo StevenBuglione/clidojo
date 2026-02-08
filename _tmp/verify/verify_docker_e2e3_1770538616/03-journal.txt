@@ -1,0 +1,40 @@
+ CLI Dojo | Free Play | builtin-core/level-001-pipes-101 | 36s | Engine: docker
+┌ HUD ───────────────────────────────────┐┌ Terminal ──────────────────────────────────────────────────────────────────────────────────────┐
+│Objective                               ││player@dojo:/work$ sort /levels/current/animals.txt | uniq -c | sort -nr | sed -E 's/^[[:space:]│
+│- Read /levels/current/animals.txt      ││]*([0-9]+)[[:space:]]+(.+)$/\1\t\2/' > /work/animal_counts.txt                                  │
+│- Create /work/animal_counts.txt with co││player@dojo:/work$ ▌                                                                            │
+│- When counts tie, sort by animal name A││                                                                                                │
+│- Format each line as: COUNT<TAB>ANIMAL ││                                                                                                │
+│                                        ││                                                                                                │
+│Session Goals                           ││                                                                                                │
+│- Finish the level                      ││                                                                                                │
+│- Use┌ Journal ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐     │
+│- Use│03:17:00  sort /levels/current/animals.txt | uniq -c | sort -nr | sed -E 's/^[[:space:]]*([0-9]+)[[:space:]]+(.+)$/\1\t\2/' > │     │
+│- Tar│                                                                                                                              │     │
+│     │Enter: AI Explain                                                                                                             │     │
+│Check│y: Copy current  Y/Ctrl+C: Copy all                                                                                           │     │
+│✓ Cre│Esc: Close                                                                                                                    │     │
+│✗ Out│                                                                                                                              │     │
+│✓ Bon│                                                                                                                              │     │
+│     │                                                                                                                              │     │
+│Hints│                                                                                                                              │     │
+│1. [a│                                                                                                                              │     │
+│`sort│                                                                                                                              │     │
+│     │                                                                                                                              │     │
+│2. [l│                                                                                                                              │     │
+│3. [l│                                                                                                                              │     │
+│     │                                                                                                                              │     │
+│Score│                                                                                                                              │     │
+│Curre│                                                                                                                              │     │
+│Hints│                                                                                                                              │     │
+│Strea└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘     │
+│                                        ││                                                                                                │
+│Mastery                                 ││                                                                                                │
+│▌│                                       │                                                                                                │
+│                                        ││                                                                                                │
+│                                        ││                                                                                                │
+│                                        ││                                                                                                │
+│                                        ││                                                                                                │
+│                                        ││                                                                                                │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1 Hints • F2 Goal • F4 Journal • F5 Check • F6 Reset • F9 Scrollback • F10 Menu | Auto-check updated

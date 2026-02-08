@@ -14,6 +14,7 @@ type Pane interface {
 	Stop() error
 	Resize(cols, rows int) error
 	SendInput(data []byte) error
+	BracketedPasteEnabled() bool
 	ToggleScrollback()
 	Scroll(delta int)
 	InScrollback() bool

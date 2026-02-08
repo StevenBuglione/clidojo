@@ -1,0 +1,48 @@
+ CLI Dojo | Free Play | builtin-core/level-001-pipes-101 | 24s | Engine: docker
+┌ HUD ───────────────────────────────────┐┌ Terminal ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│Objective                               ││player@dojo:/work$ echo one                                                                                         │
+│- Read /levels/current/animals.txt      ││one                                                                                                                 │
+│- Create /work/animal_counts.txt with co││player@dojo:/work$ ls /levels/current | head -n 2                                                                   │
+│- When counts tie, sort by animal name A││animals.txt                                                                                                         │
+│- Format each line as: COUNT<TAB>ANIMAL ││player@dojo:/work$ printf 'x\n' > /work/foo.txt                                                                     │
+│                                        ││player@dojo:/work$ ▌                                                                                                │
+│Session Goals                           ││                                                                                                                    │
+│- Finish the level                      ││                                                                                                                    │
+│- Use at most 3 hint(s)                 ││                                                                                                                    │
+│- Use at most 2 reset(s)                ││                                                                                                                    │
+│- Tar┌ Journal ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐     │
+│     │02:34:50  echo one                                                                                                                                │     │
+│Check│02:34:51  ls /levels/current | head -n 2 [pipe]                                                                                                   │     │
+│• Cre│02:34:52  printf 'x\n' > /work/foo.txt                                                                                                            │     │
+│• Out│                                                                                                                                                  │     │
+│• Bon│Enter: AI Explain                                                                                                                                 │     │
+│     │y: Copy current  Y/Ctrl+C: Copy all                                                                                                               │     │
+│Hints│Esc: Close                                                                                                                                        │     │
+│1. [a│                                                                                                                                                  │     │
+│`sort│                                                                                                                                                  │     │
+│     │                                                                                                                                                  │     │
+│2. [l│                                                                                                                                                  │     │
+│3. [l│                                                                                                                                                  │     │
+│     │                                                                                                                                                  │     │
+│Score│                                                                                                                                                  │     │
+│Curre│                                                                                                                                                  │     │
+│Hints│                                                                                                                                                  │     │
+│Strea│                                                                                                                                                  │     │
+│     │                                                                                                                                                  │     │
+│     │                                                                                                                                                  │     │
+│     │                                                                                                                                                  │     │
+│     │                                                                                                                                                  │     │
+│     │                                                                                                                                                  │     │
+│     └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘     │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1 Hints • F2 Goal • F4 Journal • F5 Check • F6 Reset • F9 Scrollback • F10 Menu | Level ready

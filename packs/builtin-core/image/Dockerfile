@@ -3,7 +3,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       bash coreutils findutils grep sed gawk \
-      less vim-tiny procps \
+      less vim procps \
       ca-certificates \
       tar gzip \
     && rm -rf /var/lib/apt/lists/*

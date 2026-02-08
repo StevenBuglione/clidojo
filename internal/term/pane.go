@@ -20,6 +20,12 @@ import (
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
+const (
+	bracketedPasteOnSeq  = "\x1b[?2004h"
+	bracketedPasteOffSeq = "\x1b[?2004l"
+	modeTailMaxLen       = 64
+)
+
 type TerminalPane struct {
 	*tview.Box
 
@@ -40,6 +46,8 @@ type TerminalPane struct {
 	inScrollback    bool
 	scrollbackIndex int
 	lineTail        string
+	modeTail        string
+	bracketedPaste  bool
 }
 
 func NewTerminalPane(onDirty func()) *TerminalPane {
@@ -93,6 +101,8 @@ func (p *TerminalPane) Start(ctx context.Context, command []string, cwd string, 
 	p.inScrollback = false
 	p.scrollbackIndex = 0
 	p.lineTail = ""
+	p.modeTail = ""
+	p.bracketedPaste = false
 	_ = vt10x.ResizePty(ptmx, max(1, p.cols), max(1, p.rows))
 	p.mu.Unlock()
 
@@ -128,6 +138,8 @@ func (p *TerminalPane) StartPlayback(ctx context.Context, frames []PlaybackFrame
 	p.inScrollback = false
 	p.scrollbackIndex = 0
 	p.lineTail = ""
+	p.modeTail = ""
+	p.bracketedPaste = false
 	p.mu.Unlock()
 
 	go p.playbackLoop(playCtx, frames, loop)
@@ -182,6 +194,7 @@ func (p *TerminalPane) readLoop() {
 			copy(chunk, buf[:n])
 
 			p.mu.Lock()
+			p.updateModesLocked(chunk)
 			_, _ = vt.Write(chunk)
 			p.appendScrollbackLocked(chunk)
 			p.mu.Unlock()
@@ -267,6 +280,12 @@ func (p *TerminalPane) SendInput(data []byte) error {
 	return err
 }
 
+func (p *TerminalPane) BracketedPasteEnabled() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.bracketedPaste
+}
+
 func (p *TerminalPane) ToggleScrollback() {
 	p.mu.Lock()
 	p.inScrollback = !p.inScrollback
@@ -335,7 +354,10 @@ func (p *TerminalPane) Draw(screen tcell.Screen) {
 
 	for row := 0; row < drawH; row++ {
 		for col := 0; col < drawW; col++ {
-			g := p.vt.Cell(col, row)
+			g, ok := p.safeCellLocked(col, row)
+			if !ok {
+				continue
+			}
 			ch := g.Char
 			if ch == 0 {
 				ch = ' '
@@ -348,7 +370,10 @@ func (p *TerminalPane) Draw(screen tcell.Screen) {
 	if p.vt.CursorVisible() {
 		cur := p.vt.Cursor()
 		if cur.X >= 0 && cur.X < drawW && cur.Y >= 0 && cur.Y < drawH {
-			g := p.vt.Cell(cur.X, cur.Y)
+			g, ok := p.safeCellLocked(cur.X, cur.Y)
+			if !ok {
+				return
+			}
 			ch := g.Char
 			if ch == 0 {
 				ch = ' '
@@ -436,7 +461,10 @@ func (p *TerminalPane) Snapshot(width, height int) Snapshot {
 		}
 		if row < drawH {
 			for col := 0; col < drawW; col++ {
-				g := p.vt.Cell(col, row)
+				g, ok := p.safeCellLocked(col, row)
+				if !ok {
+					continue
+				}
 				ch := g.Char
 				if ch == 0 || !utf8.ValidRune(ch) {
 					ch = ' '
@@ -489,6 +517,7 @@ func (p *TerminalPane) playbackLoop(ctx context.Context, frames []PlaybackFrame,
 
 			p.mu.Lock()
 			if p.vt != nil {
+				p.updateModesLocked(frame.Data)
 				_, _ = p.vt.Write(frame.Data)
 				p.appendScrollbackLocked(frame.Data)
 			}
@@ -499,6 +528,22 @@ func (p *TerminalPane) playbackLoop(ctx context.Context, frames []PlaybackFrame,
 			return
 		}
 	}
+}
+
+func (p *TerminalPane) updateModesLocked(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	state := p.modeTail + string(chunk)
+	lastOn := strings.LastIndex(state, bracketedPasteOnSeq)
+	lastOff := strings.LastIndex(state, bracketedPasteOffSeq)
+	if lastOn >= 0 || lastOff >= 0 {
+		p.bracketedPaste = lastOn > lastOff
+	}
+	if len(state) > modeTailMaxLen {
+		state = state[len(state)-modeTailMaxLen:]
+	}
+	p.modeTail = state
 }
 
 func clipWidth(s string, w int) string {
@@ -530,6 +575,18 @@ func drawTextLine(screen tcell.Screen, x, y, width int, text string, style tcell
 		}
 		screen.SetContent(x+i, y, ch, nil, style)
 	}
+}
+
+func (p *TerminalPane) safeCellLocked(col, row int) (g vt10x.Glyph, ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	if p.vt == nil {
+		return g, false
+	}
+	return p.vt.Cell(col, row), true
 }
 
 func vtColorToCell(c vt10x.Color, fg bool) tcell.Color {

@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,8 @@ import (
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
@@ -47,11 +50,14 @@ func (k gameKeyMap) FullHelp() [][]key.Binding {
 }
 
 type Root struct {
-	theme Theme
-	ascii bool
-	debug bool
-	term  term.Pane
-	ctrl  Controller
+	theme        Theme
+	ascii        bool
+	debug        bool
+	term         term.Pane
+	ctrl         Controller
+	styleVariant string
+	motionLevel  string
+	mouseScope   string
 
 	mu      sync.Mutex
 	program *tea.Program
@@ -75,6 +81,7 @@ type Root struct {
 	setupMsg      string
 	setupDetails  string
 	statusFlash   string
+	checking      bool
 
 	journalEntries []JournalEntry
 	referenceText  string
@@ -102,6 +109,8 @@ type Root struct {
 
 	help       help.Model
 	keymap     gameKeyMap
+	mastery    progress.Model
+	checkSpin  spinner.Model
 	markdown   *glamour.TermRenderer
 	logger     *clog.Logger
 	overlayPos float64
@@ -113,12 +122,17 @@ type Root struct {
 	termCursorX    int
 	termCursorY    int
 	termCursorShow bool
+
+	lastInputEvent string
 }
 
 type Options struct {
-	ASCIIOnly bool
-	Debug     bool
-	TermPane  term.Pane
+	ASCIIOnly    bool
+	Debug        bool
+	TermPane     term.Pane
+	StyleVariant string
+	MotionLevel  string
+	MouseScope   string
 }
 
 func New(opts Options) *Root {
@@ -137,20 +151,48 @@ func New(opts Options) *Root {
 
 	h := help.New()
 	h.Styles = help.DefaultDarkStyles()
+	motionLevel := normalizeMotionLevel(opts.MotionLevel)
+	mouseScope := normalizeMouseScope(opts.MouseScope)
+	styleVariant := normalizeStyleVariant(opts.StyleVariant)
+	theme := ThemeForVariant(styleVariant)
+	spring := harmonica.NewSpring(harmonica.FPS(60), 10.0, 0.8)
+	switch motionLevel {
+	case "reduced":
+		spring = harmonica.NewSpring(harmonica.FPS(30), 9.0, 0.92)
+	case "off":
+		spring = harmonica.NewSpring(harmonica.FPS(60), 1000.0, 1.0)
+	}
+	mastery := progress.New(
+		progress.WithWidth(20),
+		progress.WithColors(lipgloss.Color("#5EC2FF"), lipgloss.Color("#79E6A6"), lipgloss.Color("#F2D16B")),
+		progress.WithScaled(true),
+	)
+	if motionLevel == "off" {
+		mastery.SetSpringOptions(1000.0, 1.0)
+	}
+	checkSpin := spinner.New(
+		spinner.WithSpinner(spinner.MiniDot),
+		spinner.WithStyle(theme.Accent),
+	)
 
 	r := &Root{
-		theme:    DefaultTheme(),
-		ascii:    opts.ASCIIOnly,
-		debug:    opts.Debug,
-		term:     opts.TermPane,
-		screen:   ScreenMainMenu,
-		layout:   LayoutWide,
-		cols:     120,
-		rows:     30,
-		help:     h,
-		markdown: renderer,
-		logger:   logger,
-		spring:   harmonica.NewSpring(harmonica.FPS(60), 10.0, 0.8),
+		theme:        theme,
+		ascii:        opts.ASCIIOnly,
+		debug:        opts.Debug,
+		term:         opts.TermPane,
+		styleVariant: styleVariant,
+		motionLevel:  motionLevel,
+		mouseScope:   mouseScope,
+		screen:       ScreenMainMenu,
+		layout:       LayoutWide,
+		cols:         120,
+		rows:         30,
+		help:         h,
+		mastery:      mastery,
+		checkSpin:    checkSpin,
+		markdown:     renderer,
+		logger:       logger,
+		spring:       spring,
 		state: PlayingState{
 			ModeLabel: "Free Play",
 			StartedAt: time.Now(),
@@ -170,10 +212,18 @@ func New(opts Options) *Root {
 }
 
 func (r *Root) Init() tea.Cmd {
-	return tea.Batch(clockTickCmd(), animateTickCmd())
+	return tea.Batch(clockTickCmd(), animateTickCmd(), spinnerTickCmd(r.checkSpin))
 }
 
-func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (r *Root) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.onModelPanic("update", rec, msg)
+			model = r
+			cmd = nil
+		}
+	}()
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		r.cols = msg.Width
@@ -213,15 +263,37 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			r.overlayVel = 0
 		}
 		return r, nil
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		r.checkSpin, cmd = r.checkSpin.Update(msg)
+		return r, cmd
 	case tea.PasteMsg:
 		return r.handlePaste(msg)
+	case tea.ClipboardMsg:
+		return r.handlePaste(tea.PasteMsg{Content: msg.Content})
+	case tea.MouseClickMsg:
+		return r.handleMouseClick(msg)
+	case tea.MouseWheelMsg:
+		return r.handleMouseWheel(msg)
 	case tea.KeyPressMsg:
 		return r.handleKey(msg)
 	}
 	return r, nil
 }
 
-func (r *Root) View() tea.View {
+func (r *Root) View() (view tea.View) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.onModelPanic("view", rec, nil)
+			width := max(1, r.cols)
+			msg := "UI recovered from a rendering panic. Check logs."
+			if r.statusFlash == "" {
+				r.statusFlash = "Recovered UI panic"
+			}
+			view = tea.NewView(r.theme.Fail.Width(width).Render(trimForWidth(msg, max(1, width-1))))
+		}
+	}()
+
 	if r.cols < 1 {
 		r.cols = 120
 	}
@@ -245,6 +317,11 @@ func (r *Root) View() tea.View {
 	}
 	v := tea.NewView(base)
 	v.AltScreen = true
+	v.MouseMode = r.currentMouseMode()
+	if r.termCursorShow && !r.overlayActive() && r.screen == ScreenPlaying {
+		v.Cursor = tea.NewCursor(r.termCursorX, r.termCursorY)
+	}
+	v.DisableBracketedPasteMode = false
 	return v
 }
 
@@ -288,7 +365,8 @@ func (r *Root) SetScreen(screen Screen) {
 			if m.state.StartedAt.IsZero() {
 				m.state.StartedAt = time.Now()
 			}
-			m.dispatchController(func(c Controller) { c.OnResize(m.cols, m.rows) })
+			cols, rows := m.cols, m.rows
+			m.dispatchController(func(c Controller) { c.OnResize(cols, rows) })
 		}
 	})
 }
@@ -360,6 +438,14 @@ func (r *Root) SetHintsOpen(open bool) {
 func (r *Root) SetGoalOpen(open bool) {
 	r.apply(func(m *Root) {
 		m.goalOpen = open
+		if m.motionLevel == "off" {
+			if open {
+				m.overlayPos = 1
+			} else {
+				m.overlayPos = 0
+			}
+			m.overlayVel = 0
+		}
 	})
 }
 
@@ -393,6 +479,9 @@ func (r *Root) SetResult(state ResultState) {
 func (r *Root) SetJournalEntries(entries []JournalEntry) {
 	r.apply(func(m *Root) {
 		m.journalEntries = append([]JournalEntry(nil), entries...)
+		if m.journalIndex >= len(m.journalEntries) {
+			m.journalIndex = max(0, len(m.journalEntries)-1)
+		}
 	})
 }
 
@@ -415,6 +504,12 @@ func (r *Root) SetInfo(title, text string, open bool) {
 		m.infoTitle = title
 		m.infoText = text
 		m.infoOpen = open
+	})
+}
+
+func (r *Root) SetChecking(checking bool) {
+	r.apply(func(m *Root) {
+		m.checking = checking
 	})
 }
 
@@ -473,6 +568,8 @@ func (r *Root) dispatchController(fn func(Controller)) {
 }
 
 func (r *Root) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	r.recordInputEvent(fmt.Sprintf("key:%v mod:%v text:%q", msg.Code, msg.Mod, msg.Text))
+
 	if key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+q"))) {
 		r.dispatchController(func(c Controller) { c.OnQuit() })
 		return r, nil
@@ -493,6 +590,8 @@ func (r *Root) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (r *Root) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	r.recordInputEvent(fmt.Sprintf("paste:%d", len(msg.Content)))
+
 	if r.screen != ScreenPlaying || r.overlayActive() {
 		return r, nil
 	}
@@ -502,14 +601,219 @@ func (r *Root) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 	if msg.Content == "" {
 		return r, nil
 	}
-	content := []byte(msg.Content)
+	bracketed := false
+	if r.term != nil {
+		bracketed = r.term.BracketedPasteEnabled()
+	}
+	content := term.EncodePasteToBytes(msg.Content, bracketed)
+	if len(content) == 0 {
+		return r, nil
+	}
 	r.dispatchController(func(c Controller) { c.OnTerminalInput(content) })
 	return r, nil
 }
 
+func (r *Root) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	mouse := msg.Mouse()
+	r.recordInputEvent(fmt.Sprintf("mouse_click:%d,%d button:%v", mouse.X, mouse.Y, mouse.Button))
+
+	if r.mouseScope == "off" {
+		return r, nil
+	}
+	m := mouse
+	if m.Button != tea.MouseLeft {
+		return r, nil
+	}
+
+	if r.overlayActive() {
+		return r.handleOverlayMouseClick(m.X, m.Y)
+	}
+	if r.mouseScope == "scoped" && r.screen == ScreenPlaying {
+		return r, nil
+	}
+	switch r.screen {
+	case ScreenMainMenu:
+		return r.handleMainMenuMouseClick(m.X, m.Y)
+	case ScreenLevelSelect:
+		return r.handleLevelSelectMouseClick(m.X, m.Y)
+	}
+	return r, nil
+}
+
+func (r *Root) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	mouse := msg.Mouse()
+	r.recordInputEvent(fmt.Sprintf("mouse_wheel:%d,%d button:%v", mouse.X, mouse.Y, mouse.Button))
+
+	if r.mouseScope == "off" {
+		return r, nil
+	}
+	m := mouse
+	delta := 0
+	if m.Button == tea.MouseWheelUp {
+		delta = -1
+	} else if m.Button == tea.MouseWheelDown {
+		delta = 1
+	}
+	if delta == 0 {
+		return r, nil
+	}
+
+	if r.overlayActive() && r.topOverlay() == "journal" && len(r.journalEntries) > 0 {
+		r.journalIndex += delta
+		if r.journalIndex < 0 {
+			r.journalIndex = 0
+		}
+		if r.journalIndex > len(r.journalEntries)-1 {
+			r.journalIndex = len(r.journalEntries) - 1
+		}
+		return r, nil
+	}
+	if r.term != nil && r.screen == ScreenPlaying && (r.mouseScope == "full" || r.term.InScrollback()) {
+		if !r.term.InScrollback() {
+			r.term.ToggleScrollback()
+		}
+		r.term.Scroll(delta * 3)
+	}
+	return r, nil
+}
+
+func (r *Root) handleMainMenuMouseClick(x, y int) (tea.Model, tea.Cmd) {
+	items := r.mainMenuItems()
+	if len(items) == 0 {
+		return r, nil
+	}
+	leftW := min(36, max(24, r.cols/3))
+	if x < 1 || x >= leftW-1 {
+		return r, nil
+	}
+	idx := y - 2
+	if idx < 0 || idx >= len(items) {
+		return r, nil
+	}
+	r.mainMenuIndex = idx
+	r.activateMainMenuSelection()
+	return r, nil
+}
+
+func (r *Root) handleLevelSelectMouseClick(x, y int) (tea.Model, tea.Cmd) {
+	if y < 2 {
+		return r, nil
+	}
+	leftW := min(34, max(24, r.cols/4))
+	middleW := min(46, max(28, r.cols/3))
+	idx := y - 2
+
+	if x >= 1 && x < leftW-1 {
+		if len(r.catalog) == 0 {
+			return r, nil
+		}
+		r.catalogFocus = 0
+		r.packIndex = wrapIndex(idx, len(r.catalog))
+		r.syncSelectionFromIndices()
+		return r, nil
+	}
+	if x >= leftW+1 && x < leftW+middleW-1 {
+		levels := r.selectedPackLevels()
+		if len(levels) == 0 {
+			return r, nil
+		}
+		r.catalogFocus = 1
+		r.levelIndex = wrapIndex(idx, len(levels))
+		r.syncSelectionFromIndices()
+		r.startSelectedLevel()
+		return r, nil
+	}
+	return r, nil
+}
+
+func (r *Root) handleOverlayMouseClick(x, y int) (tea.Model, tea.Cmd) {
+	top := r.topOverlay()
+	spec, ok := r.overlaySpec(top)
+	if !ok {
+		return r, nil
+	}
+	if x < spec.startCol+1 || x >= spec.startCol+spec.width-1 || y < spec.startRow+1 || y >= spec.startRow+spec.height-1 {
+		return r, nil
+	}
+	contentRow := y - (spec.startRow + 1)
+	switch top {
+	case "menu":
+		items := r.menuItems()
+		if contentRow >= 0 && contentRow < len(items) {
+			r.menuIndex = contentRow
+			r.activateMenuItem(items[contentRow])
+		}
+	case "result":
+		buttons := r.resultButtons()
+		baseRows := len(strings.Split(strings.TrimSuffix(r.resultText(), "\n"), "\n"))
+		actionRowStart := baseRows + 2
+		row := contentRow - actionRowStart
+		if row >= 0 && row < len(buttons) {
+			r.resultIndex = row
+			r.activateResultButton(buttons[row])
+		}
+	case "reset":
+		// Reset actions are rendered as two selectable rows after prompt text.
+		row := contentRow - 2
+		if row >= 0 && row <= 1 {
+			r.resetIndex = row
+			if row == 1 {
+				r.resetOpen = false
+				r.dispatchController(func(c Controller) { c.OnReset() })
+			} else {
+				r.resetOpen = false
+			}
+		}
+	case "hints":
+		// Click anywhere in hints overlay to reveal next available hint.
+		r.dispatchController(func(c Controller) { c.OnRevealHint() })
+	case "journal":
+		// Click anywhere in journal overlay to trigger explain action.
+		r.dispatchController(func(c Controller) { c.OnJournalExplainAI() })
+	default:
+		_ = x
+	}
+	return r, nil
+}
+
 func (r *Root) handleOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if msg.Code == tea.KeyEsc || msg.Code == tea.KeyEscape {
-		r.closeTopOverlay()
+	if msg.Code == tea.KeyF10 {
+		if r.topOverlay() == "menu" {
+			r.menuOpen = false
+			r.dispatchController(func(c Controller) { c.OnMenu() })
+			return r, r.animateIfNeeded()
+		}
+		r.dismissAllOverlays()
+		r.menuOpen = true
+		r.dispatchController(func(c Controller) { c.OnMenu() })
+		return r, r.animateIfNeeded()
+	}
+
+	if (msg.Code == 'c' || msg.Code == 'C') && msg.Mod&tea.ModCtrl != 0 {
+		text := r.overlayCopyText(true)
+		if strings.TrimSpace(text) == "" {
+			return r, nil
+		}
+		r.statusFlash = "Copied overlay text"
+		return r, tea.SetClipboard(text)
+	}
+	if msg.Mod == 0 && (msg.Code == 'y' || msg.Code == 'Y') {
+		full := msg.Code == 'Y'
+		text := r.overlayCopyText(full)
+		if strings.TrimSpace(text) == "" {
+			return r, nil
+		}
+		if full {
+			r.statusFlash = "Copied overlay text"
+		} else {
+			r.statusFlash = "Copied selection"
+		}
+		return r, tea.SetClipboard(text)
+	}
+
+	if msg.Code == tea.KeyEsc || msg.Code == tea.KeyEscape ||
+		(msg.Mod == 0 && (msg.Code == 'q' || msg.Code == 'Q')) {
+		r.dismissTopOverlay()
 		return r, r.animateIfNeeded()
 	}
 
@@ -564,6 +868,31 @@ func (r *Root) handleOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return r, nil
+}
+
+func (r *Root) dismissTopOverlay() {
+	switch r.topOverlay() {
+	case "menu":
+		r.menuOpen = false
+		r.dispatchController(func(c Controller) { c.OnMenu() })
+	case "hints":
+		r.hintsOpen = false
+		r.dispatchController(func(c Controller) { c.OnHints() })
+	case "journal":
+		r.journalOpen = false
+		r.dispatchController(func(c Controller) { c.OnJournal() })
+	case "result":
+		r.result = ResultState{}
+		r.dispatchController(func(c Controller) { c.OnTryAgain() })
+	default:
+		r.closeTopOverlay()
+	}
+}
+
+func (r *Root) dismissAllOverlays() {
+	for i := 0; i < 8 && r.overlayActive(); i++ {
+		r.dismissTopOverlay()
+	}
 }
 
 func (r *Root) handleMainMenuKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -625,6 +954,11 @@ func (r *Root) handleLevelSelectKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (r *Root) handlePlayingKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if (msg.Code == tea.KeyInsert && msg.Mod&tea.ModShift != 0) ||
+		((msg.Code == 'v' || msg.Code == 'V') && msg.Mod&tea.ModCtrl != 0 && msg.Mod&tea.ModShift != 0) {
+		return r, func() tea.Msg { return tea.ReadClipboard() }
+	}
+
 	switch msg.Code {
 	case tea.KeyF1:
 		r.dispatchController(func(c Controller) { c.OnHints() })
@@ -651,7 +985,7 @@ func (r *Root) handlePlayingKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return r, nil
 	case tea.KeyEsc:
 		if r.goalOpen {
-			r.goalOpen = false
+			r.dispatchController(func(c Controller) { c.OnGoal() })
 			return r, nil
 		}
 		if r.term != nil && r.term.InScrollback() {
@@ -887,9 +1221,25 @@ func (r *Root) renderGoalDrawer(bodyHeight int) string {
 }
 
 func (r *Root) renderOverlay() string {
-	top := r.topOverlay()
-	if top == "" {
+	spec, ok := r.overlaySpec(r.topOverlay())
+	if !ok {
 		return ""
+	}
+	return r.drawPanel(spec.title, spec.lines, spec.width, spec.height)
+}
+
+type overlaySpec struct {
+	title    string
+	lines    []string
+	width    int
+	height   int
+	startRow int
+	startCol int
+}
+
+func (r *Root) overlaySpec(top string) (overlaySpec, bool) {
+	if top == "" {
+		return overlaySpec{}, false
 	}
 	w := min(max(56, r.cols-12), r.cols)
 	h := min(max(10, r.rows/2), max(8, r.rows-4))
@@ -910,11 +1260,11 @@ func (r *Root) renderOverlay() string {
 	case "hints":
 		title = "Hints"
 		lines = strings.Split(strings.TrimSuffix(r.hintsText(), "\n"), "\n")
-		lines = append(lines, "", "Enter: Reveal hint", "Esc: Close")
+		lines = append(lines, "", "Enter: Reveal hint", "y: Copy hints", "Esc: Close")
 	case "journal":
 		title = "Journal"
 		lines = strings.Split(strings.TrimSuffix(r.journalText(), "\n"), "\n")
-		lines = append(lines, "", "Enter: AI Explain", "Esc: Close")
+		lines = append(lines, "", "Enter: AI Explain", "y: Copy current  Y/Ctrl+C: Copy all", "Esc: Close")
 	case "result":
 		title = "Results"
 		lines = strings.Split(strings.TrimSuffix(r.resultText(), "\n"), "\n")
@@ -929,6 +1279,7 @@ func (r *Root) renderOverlay() string {
 				lines = append(lines, prefix+b)
 			}
 		}
+		lines = append(lines, "", "Ctrl+C: Copy results")
 	case "reset":
 		title = "Confirm Reset"
 		lines = []string{"Reset will destroy current /work state. Continue?", ""}
@@ -943,12 +1294,17 @@ func (r *Root) renderOverlay() string {
 	case "reference":
 		title = "Reference Solutions"
 		lines = strings.Split(strings.TrimSuffix(r.referenceText, "\n"), "\n")
+		lines = append(lines, "", "Ctrl+C: Copy text", "Esc/q: Close")
 	case "diff":
 		title = "Artifact Diff"
 		lines = strings.Split(strings.TrimSuffix(r.diffText, "\n"), "\n")
+		lines = append(lines, "", "Ctrl+C: Copy text", "Esc/q: Close")
 	case "info":
 		title = firstNonEmptyStr(r.infoTitle, "Info")
 		lines = strings.Split(strings.TrimSuffix(r.infoText, "\n"), "\n")
+		lines = append(lines, "", "Ctrl+C: Copy text", "Esc/q: Close")
+	default:
+		return overlaySpec{}, false
 	}
 	if len(lines) == 0 {
 		lines = []string{"(empty)"}
@@ -958,7 +1314,14 @@ func (r *Root) renderOverlay() string {
 	if needH > h {
 		h = min(needH, maxH)
 	}
-	return r.drawPanel(title, lines, w, h)
+	return overlaySpec{
+		title:    title,
+		lines:    lines,
+		width:    w,
+		height:   h,
+		startRow: (r.rows - h) / 2,
+		startCol: (r.cols - w) / 2,
+	}, true
 }
 
 func (r *Root) headerText() string {
@@ -970,11 +1333,32 @@ func (r *Root) headerText() string {
 		}
 		elapsed = d.String()
 	}
-	txt := fmt.Sprintf("CLI Dojo | %s | %s/%s | %s | Engine: %s", firstNonEmptyStr(r.state.ModeLabel, "Free Play"), r.state.PackID, r.state.LevelID, elapsed, firstNonEmptyStr(r.state.Engine, "unknown"))
-	txt = trimForWidth(txt, max(1, r.cols-1))
+	width := max(1, r.cols-1)
+	engine := "Engine: " + firstNonEmptyStr(r.state.Engine, "unknown")
+	mode := firstNonEmptyStr(r.state.ModeLabel, "Free Play")
+	packLevel := strings.Trim(strings.TrimSpace(r.state.PackID)+"/"+strings.TrimSpace(r.state.LevelID), "/")
+	parts := []string{"CLI Dojo", mode}
+	if packLevel != "" {
+		parts = append(parts, packLevel)
+	}
+	parts = append(parts, elapsed, engine)
+	txt := strings.Join(parts, " | ")
+	if len([]rune(txt)) > width {
+		parts = []string{"CLI Dojo"}
+		if packLevel != "" {
+			parts = append(parts, packLevel)
+		}
+		parts = append(parts, elapsed, engine)
+		txt = strings.Join(parts, " | ")
+	}
+	if len([]rune(txt)) > width && packLevel != "" {
+		shortLevel := trimForWidth(packLevel, max(8, width/3))
+		txt = strings.Join([]string{"CLI Dojo", shortLevel, elapsed, engine}, " | ")
+	}
+	txt = trimForWidth(txt, width)
 	if r.debug {
 		txt = fmt.Sprintf("%s | %dx%d %v", txt, r.cols, r.rows, r.layout)
-		txt = trimForWidth(txt, max(1, r.cols-1))
+		txt = trimForWidth(txt, width)
 	}
 	return r.theme.Header.Width(max(1, r.cols)).Render(txt)
 }
@@ -983,6 +1367,9 @@ func (r *Root) statusText() string {
 	keys := r.help.View(r.keymap)
 	if keys == "" {
 		keys = "F1 Hints  F2 Goal  F4 Journal  F5 Check  F6 Reset  F9 Scrollback  F10 Menu"
+	}
+	if r.checking {
+		keys += " | " + r.theme.Accent.Render(strings.TrimSpace(r.checkSpin.View())+" Checking...")
 	}
 	if r.statusFlash != "" {
 		keys += " | " + r.statusFlash
@@ -996,6 +1383,12 @@ func (r *Root) hudText() string {
 	b.WriteString("Objective\n")
 	for _, obj := range r.state.Objective {
 		b.WriteString("- " + obj + "\n")
+	}
+	if len(r.state.SessionGoals) > 0 {
+		b.WriteString("\nSession Goals\n")
+		for _, goal := range r.state.SessionGoals {
+			b.WriteString("- " + goal + "\n")
+		}
 	}
 	b.WriteString("\nChecks\n")
 	for _, c := range r.state.Checks {
@@ -1035,6 +1428,8 @@ func (r *Root) hudText() string {
 	}
 	b.WriteString("\nScore\n")
 	b.WriteString(fmt.Sprintf("Current: %d\nHints: %d  Resets: %d\nStreak: %d\n", r.state.Score, r.state.HintsUsed, r.state.Resets, r.state.Streak))
+	b.WriteString("\nMastery\n")
+	b.WriteString(r.masteryBar(24) + "\n")
 	if len(r.state.Badges) > 0 {
 		b.WriteString("\nBadges\n")
 		for _, badge := range r.state.Badges {
@@ -1071,8 +1466,15 @@ func (r *Root) journalText() string {
 	if len(r.journalEntries) == 0 {
 		return "No commands logged yet."
 	}
+	start := r.journalIndex
+	if start < 0 {
+		start = 0
+	}
+	if start > len(r.journalEntries)-1 {
+		start = len(r.journalEntries) - 1
+	}
 	var b strings.Builder
-	for _, e := range r.journalEntries {
+	for _, e := range r.journalEntries[start:] {
 		tags := ""
 		if len(e.Tags) > 0 {
 			tags = " [" + strings.Join(e.Tags, ",") + "]"
@@ -1149,6 +1551,7 @@ func (r *Root) mainMenuInfoText(items []menuItem) string {
 	b.WriteString("CLI Dojo\n\n")
 	b.WriteString(fmt.Sprintf("Engine: %s\n", firstNonEmptyStr(r.mainMenu.EngineName, "unknown")))
 	b.WriteString(fmt.Sprintf("Packs: %d  Levels: %d\n", r.mainMenu.PackCount, r.mainMenu.LevelCount))
+	b.WriteString(fmt.Sprintf("Due Reviews: %d\n", r.mainMenu.DueReviews))
 	if r.mainMenu.LastPackID != "" && r.mainMenu.LastLevelID != "" {
 		b.WriteString(fmt.Sprintf("Last Played: %s / %s\n", r.mainMenu.LastPackID, r.mainMenu.LastLevelID))
 	}
@@ -1173,8 +1576,14 @@ func (r *Root) levelDetailText() string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("%s\n", lv.Title))
 	b.WriteString(fmt.Sprintf("ID: %s\nDifficulty: %d\nEstimated: %d min\n", lv.LevelID, lv.Difficulty, lv.EstimatedMinutes))
+	if lv.Tier > 0 {
+		b.WriteString(fmt.Sprintf("Tier: %d\n", lv.Tier))
+	}
 	if len(lv.ToolFocus) > 0 {
 		b.WriteString("Tools: " + strings.Join(lv.ToolFocus, ", ") + "\n")
+	}
+	if len(lv.Concepts) > 0 {
+		b.WriteString("Concepts: " + strings.Join(lv.Concepts, ", ") + "\n")
 	}
 	if strings.TrimSpace(lv.SummaryMD) != "" {
 		summary := strings.TrimSpace(lv.SummaryMD)
@@ -1233,26 +1642,27 @@ func (r *Root) activateMainMenuSelection() {
 }
 
 func (r *Root) activateMenuItem(item menuItem) {
+	r.menuOpen = false
 	switch item.Action {
 	case "continue":
-		r.menuOpen = false
+		r.dispatchController(func(c Controller) { c.OnMenu() })
 	case "restart":
-		r.menuOpen = false
+		r.dispatchController(func(c Controller) { c.OnMenu() })
 		r.resetOpen = true
 	case "level_select":
-		r.menuOpen = false
+		r.dispatchController(func(c Controller) { c.OnMenu() })
 		r.dispatchController(func(c Controller) { c.OnOpenLevelSelect() })
 	case "main_menu":
-		r.menuOpen = false
+		r.dispatchController(func(c Controller) { c.OnMenu() })
 		r.dispatchController(func(c Controller) { c.OnOpenMainMenu() })
 	case "settings":
-		r.menuOpen = false
+		r.dispatchController(func(c Controller) { c.OnMenu() })
 		r.dispatchController(func(c Controller) { c.OnOpenSettings() })
 	case "stats":
-		r.menuOpen = false
+		r.dispatchController(func(c Controller) { c.OnMenu() })
 		r.dispatchController(func(c Controller) { c.OnOpenStats() })
 	case "quit":
-		r.menuOpen = false
+		r.dispatchController(func(c Controller) { c.OnMenu() })
 		r.dispatchController(func(c Controller) { c.OnQuit() })
 	}
 }
@@ -1439,6 +1849,50 @@ func (r *Root) activateResultButton(label string) {
 	}
 }
 
+func (r *Root) overlayCopyText(full bool) string {
+	switch r.topOverlay() {
+	case "journal":
+		if len(r.journalEntries) == 0 {
+			return ""
+		}
+		if full {
+			return strings.TrimSpace(r.journalText())
+		}
+		idx := r.journalIndex
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(r.journalEntries) {
+			idx = len(r.journalEntries) - 1
+		}
+		e := r.journalEntries[idx]
+		line := fmt.Sprintf("%s\t%s", e.Timestamp, e.Command)
+		if len(e.Tags) > 0 {
+			line += "\t[" + strings.Join(e.Tags, ",") + "]"
+		}
+		return line
+	case "result":
+		return strings.TrimSpace(r.resultText())
+	case "reference":
+		return strings.TrimSpace(r.referenceText)
+	case "diff":
+		return strings.TrimSpace(r.diffText)
+	case "info":
+		title := strings.TrimSpace(r.infoTitle)
+		text := strings.TrimSpace(r.infoText)
+		if title == "" {
+			return text
+		}
+		if text == "" {
+			return title
+		}
+		return title + "\n\n" + text
+	case "hints":
+		return strings.TrimSpace(r.hintsText())
+	}
+	return ""
+}
+
 func (r *Root) drawPanel(title string, lines []string, width, height int) string {
 	width = max(4, width)
 	height = max(3, height)
@@ -1497,7 +1951,56 @@ func (r *Root) animateIfNeeded() tea.Cmd {
 	return nil
 }
 
+func (r *Root) masteryBar(width int) string {
+	m := r.mastery
+	m.SetWidth(max(8, width))
+	return m.ViewAs(r.masteryPercent())
+}
+
+func (r *Root) masteryPercent() float64 {
+	total := len(r.state.Checks)
+	if total == 0 {
+		return 0
+	}
+	passed := 0
+	failed := 0
+	for _, check := range r.state.Checks {
+		switch strings.ToLower(strings.TrimSpace(check.Status)) {
+		case "pass":
+			passed++
+		case "fail":
+			failed++
+		}
+	}
+	checkRatio := float64(passed) / float64(total)
+	scoreRatio := float64(r.state.Score) / 1000.0
+	if scoreRatio < 0 {
+		scoreRatio = 0
+	}
+	if scoreRatio > 1 {
+		scoreRatio = 1
+	}
+	penalty := float64(r.state.HintsUsed)*0.08 + float64(r.state.Resets)*0.12 + float64(failed)*0.05
+	v := 0.75*checkRatio + 0.25*scoreRatio - penalty
+	if v < 0 {
+		v = 0
+	}
+	if v > 1 {
+		v = 1
+	}
+	if passed == total && failed == 0 {
+		v = maxFloat(v, 0.98)
+	}
+	if r.result.Visible && r.result.Passed {
+		v = 1
+	}
+	return v
+}
+
 func (r *Root) shouldAnimate(target float64) bool {
+	if r.motionLevel == "off" {
+		return false
+	}
 	if target > 0 {
 		return r.overlayPos < 0.999 || abs(r.overlayVel) > 0.001
 	}
@@ -1510,6 +2013,12 @@ func clockTickCmd() tea.Cmd {
 
 func animateTickCmd() tea.Cmd {
 	return tea.Tick(time.Second/60, func(t time.Time) tea.Msg { return animateMsg(t) })
+}
+
+func spinnerTickCmd(model spinner.Model) tea.Cmd {
+	return func() tea.Msg {
+		return model.Tick()
+	}
 }
 
 func firstNonEmptyStr(a, b string) string {
@@ -1703,6 +2212,75 @@ func maxFloat(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+func (r *Root) currentMouseMode() tea.MouseMode {
+	switch r.mouseScope {
+	case "off":
+		return tea.MouseModeNone
+	case "full":
+		return tea.MouseModeCellMotion
+	default:
+		if r.screen == ScreenPlaying && !r.overlayActive() && !r.goalOpen {
+			return tea.MouseModeNone
+		}
+		return tea.MouseModeCellMotion
+	}
+}
+
+func normalizeStyleVariant(v string) string {
+	switch strings.TrimSpace(v) {
+	case "cozy_clean", "retro_terminal", "modern_arcade":
+		return strings.TrimSpace(v)
+	default:
+		return "modern_arcade"
+	}
+}
+
+func normalizeMotionLevel(v string) string {
+	switch strings.TrimSpace(v) {
+	case "off", "reduced", "full":
+		return strings.TrimSpace(v)
+	default:
+		return "full"
+	}
+}
+
+func normalizeMouseScope(v string) string {
+	switch strings.TrimSpace(v) {
+	case "off", "scoped", "full":
+		return strings.TrimSpace(v)
+	default:
+		return "scoped"
+	}
+}
+
+func (r *Root) recordInputEvent(event string) {
+	r.lastInputEvent = trimForWidth(strings.TrimSpace(event), 160)
+}
+
+func (r *Root) onModelPanic(where string, recovered any, msg tea.Msg) {
+	if r.statusFlash == "" {
+		r.statusFlash = "Recovered UI panic"
+	}
+
+	message := fmt.Sprintf("%v", recovered)
+	msgType := ""
+	if msg != nil {
+		msgType = fmt.Sprintf("%T", msg)
+	}
+	r.logger.Error("ui.panic_recovered", map[string]any{
+		"where":       where,
+		"panic":       message,
+		"messageType": msgType,
+		"screen":      r.screen,
+		"layout":      r.layout,
+		"cols":        r.cols,
+		"rows":        r.rows,
+		"overlay":     r.topOverlay(),
+		"last_input":  r.lastInputEvent,
+		"stack":       string(debug.Stack()),
+	})
 }
 
 var _ tea.Model = (*Root)(nil)

@@ -1,0 +1,38 @@
+ CLI Dojo | Free Play | builtin-core/level-001-pipes-101 | 9s | Engine: docker
+┌ HUD ───────────────────────────────────┐┌ Terminal ───────────────────────────────────────────────────────────────────────┐
+│Objective                               ││player@dojo:/work$                                                               │
+│- Read /levels/current/animals.txt      ││player@dojo:/work$                                                               │
+│- Create /work/animal_counts.txt with co││player@dojo:/work$                                                               │
+│- When counts tie, sort by animal name A││player@dojo:/work$ echo stress-12                                                │
+│- Format each line as: COUNT<TAB>ANIMAL ││stress-12                                                                        │
+│                                        ││player@dojo:/work$ echo stress-21                                                │
+│Session Goals                           ││stress-21                                                                        │
+│- Finish the level                      ││player@dojo:/work$                                                               │
+│- Use at most 3 hint(s)                 ││player@dojo:/work$ [Aq▌                                                          │
+│- Use at most 2 reset(s)                ││                                                                                 │
+│- Target score: 700+                    ││                                                                                 │
+│                                        ││                                                                                 │
+│Checks                                  ││                                                                                 │
+│✗ Create /work/animal_counts.txt        ││                                                                                 │
+│✗ Output matches expected counts + forma││                                                                                 │
+│✓ Bonus: avoid useless cat (cat file | .││                                                                                 │
+│                                        ││                                                                                 │
+│Hints                                   ││                                                                                 │
+│1. [revealed] Try a pipeline like:      ││                                                                                 │
+│`sort animals.txt | uniq -c`            ││                                                                                 │
+│                                        ││                                                                                 │
+│2. [locked (after 45s)] (hidden)        ││                                                                                 │
+│3. [locked (after 90s)] (hidden)        ││                                                                                 │
+│                                        ││                                                                                 │
+│Score                                   ││                                                                                 │
+│Current: 970                            ││                                                                                 │
+│Hints: 1  Resets: 0                     ││                                                                                 │
+│Streak: 0                               ││                                                                                 │
+│                                        ││                                                                                 │
+│Mastery                                 ││                                                                                 │
+│▌│                                       │                                                                                 │
+│                                        ││                                                                                 │
+│                                        ││                                                                                 │
+│                                        ││                                                                                 │
+└────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────┘
+ F1 Hints • F2 Goal • F4 Journal • F5 Check • F6 Reset • F9 Scrollback • F10 Menu | Auto-check updated

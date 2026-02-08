@@ -49,6 +49,7 @@ type View interface {
 	SetReferenceText(text string, open bool)
 	SetDiffText(text string, open bool)
 	SetInfo(title, text string, open bool)
+	SetChecking(checking bool)
 	FlashStatus(msg string)
 }
 
@@ -74,17 +75,18 @@ type PlayingState struct {
 	LevelID   string
 	// ElapsedLabel overrides live timer rendering when set (used by deterministic demos).
 	ElapsedLabel string
-	HudWidth  int
-	Objective []string
-	Checks    []CheckRow
-	Hints     []HintRow
-	Engine    string
-	StartedAt time.Time
-	HintsUsed int
-	Resets    int
-	Score     int
-	Streak    int
-	Badges    []string
+	HudWidth     int
+	Objective    []string
+	Checks       []CheckRow
+	Hints        []HintRow
+	Engine       string
+	StartedAt    time.Time
+	HintsUsed    int
+	Resets       int
+	Score        int
+	Streak       int
+	Badges       []string
+	SessionGoals []string
 }
 
 type HintRow struct {
@@ -133,6 +135,7 @@ type MainMenuState struct {
 	EngineName  string
 	PackCount   int
 	LevelCount  int
+	DueReviews  int
 	LastPackID  string
 	LastLevelID string
 	Streak      int
@@ -157,4 +160,6 @@ type LevelSummary struct {
 	SummaryMD        string
 	ToolFocus        []string
 	ObjectiveBullets []string
+	Concepts         []string
+	Tier             int
 }

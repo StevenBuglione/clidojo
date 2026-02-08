@@ -1,0 +1,50 @@
+ CLI Dojo | Free Play | builtin-core/level-002-find-safe | 11s | Engine: docker
+┌ HUD ───────────────────────────────────┐┌ Terminal ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│Objective                               ││player@dojo:/work$ printf '0\n' > /work/error_lines.txt                                                                       │
+│- Search all *.log files under /levels/c││player@dojo:/work$ ▌                                                                                                          │
+│- Count how many lines contain the liter││                                                                                                                              │
+│- Write the number and a trailing newlin││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│Session Goals                           ││                                                                                                                              │
+│- Finish the level                      ││                                                                                                                              │
+│- Use at most 2 hint(s)                 ││                                                                                                                              │
+│- Use at most 1 reset(s)                ││                                                                                                                              │
+│- Target score: 760+                    ││                                                                                                                              │
+│     ┌ Artifact Diff ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐     │
+│Check│## /work/error_lines.txt vs expected                                                                                                                        │     │
+│✗ Use│--- expected                                                                                                                                                │     │
+│✓ Avo│+++ actual                                                                                                                                                  │     │
+│✓ Cre│-7                                                                                                                                                          │     │
+│✗ Cor│+0                                                                                                                                                          │     │
+│✗ Bon│                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│Hints│Ctrl+C: Copy text                                                                                                                                           │     │
+│1. [a│Esc/q: Close                                                                                                                                                │     │
+│`find│                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│2. [l│                                                                                                                                                            │     │
+│3. [l│                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│Score│                                                                                                                                                            │     │
+│Curre│                                                                                                                                                            │     │
+│Hints│                                                                                                                                                            │     │
+│Strea│                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│     │                                                                                                                                                            │     │
+│     └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘     │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+└────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1 Hints • F2 Goal • F4 Journal • F5 Check • F6 Reset • F9 Scrollback • F10 Menu | FAIL

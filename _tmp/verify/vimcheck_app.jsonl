@@ -1,0 +1,18 @@
+{"level":"info","msg":"app.start","sandbox":"docker","session":"1f5650c0-cb91-4af6-9631-7e9f2e927f71","ts":"2026-02-08T07:18:14.642310497Z"}
+{"engine":"docker","level":"info","msg":"engine.detected","ts":"2026-02-08T07:18:15.133857016Z","version":"Docker version 29.2.0, build 0b9d198"}
+{"active_level":false,"level":"info","msg":"ui.level_select.begin","ts":"2026-02-08T07:18:17.588538581Z"}
+{"level":"info","msg":"ui.level_select.clear_overlays","ts":"2026-02-08T07:18:17.588596592Z"}
+{"level":"level-001-pipes-101","msg":"ui.level_select.switch_screen","pack":"builtin-core","ts":"2026-02-08T07:18:17.591357695Z"}
+{"level":"info","msg":"ui.level_select.state","ts":"2026-02-08T07:18:17.59315451Z"}
+{"level":"info","msg":"ui.level_select.persist","ts":"2026-02-08T07:18:17.593964643Z"}
+{"level":"info","msg":"ui.level_select.done","ts":"2026-02-08T07:18:17.59409839Z"}
+{"level":"info","msg":"level.stage_workdir","ts":"2026-02-08T07:18:19.594536889Z","workdir":"/tmp/clidojo-vimcheck-14696/work/1f5650c0-cb91-4af6-9631-7e9f2e927f71/level-001-pipes-101"}
+{"engine":"docker","image":"clidojo/builtin-core:0.1.0","level":"info","msg":"image.ensure.build","pack":"builtin-core","ts":"2026-02-08T07:18:19.595126559Z"}
+{"container":"clidojo_1f5650c0_level-001-pipes-101","level":"info","mock":false,"msg":"sandbox.started","ts":"2026-02-08T07:18:34.546446631Z"}
+{"level":"info","mode":"pty","msg":"term.mode","ts":"2026-02-08T07:18:34.557495853Z"}
+{"level":"level-001-pipes-101","msg":"term.pty.started","ts":"2026-02-08T07:18:34.558015325Z"}
+{"level":"level-001-pipes-101","msg":"level.start.sync_state","ts":"2026-02-08T07:18:34.5580387Z"}
+{"level":"level-001-pipes-101","msg":"level.start.set_screen","ts":"2026-02-08T07:18:34.55805962Z"}
+{"level":"level-001-pipes-101","msg":"level.start.flash","ts":"2026-02-08T07:18:34.559224657Z"}
+{"level":"level-001-pipes-101","msg":"level.start.persist_state","ts":"2026-02-08T07:18:34.560138258Z"}
+{"level":"level-001-pipes-101","msg":"level.start.done","ts":"2026-02-08T07:18:34.56031059Z"}

@@ -47,6 +47,23 @@ func TestDrawClampsToVTSize(t *testing.T) {
 	p.Draw(s)
 }
 
+func TestSnapshotDoesNotPanicWhenVTBoundsShift(t *testing.T) {
+	p := NewTerminalPane(nil)
+	p.vt = vt10x.New(vt10x.WithWriter(io.Discard), vt10x.WithSize(80, 24))
+	p.rows = 40
+	p.cols = 120
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("snapshot panicked: %v", r)
+		}
+	}()
+	snap := p.Snapshot(120, 40)
+	if len(snap.Lines) != 40 {
+		t.Fatalf("expected 40 snapshot lines, got %d", len(snap.Lines))
+	}
+}
+
 func readLine(s tcell.SimulationScreen, x, y, w int) string {
 	var b strings.Builder
 	for i := 0; i < w; i++ {

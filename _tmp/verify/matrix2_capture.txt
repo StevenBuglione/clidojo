@@ -1,0 +1,52 @@
+ CLI Dojo | Free Play | builtin-core/level-003-top-ips | 12s | Engine: docker
+┌ HUD ───────────────────────────────────┐┌ Terminal ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│Objective                               ││player@dojo:/work$ awk '{print $1}' /levels/current/access.log | sort | uniq -c | sort -nr | head -n 5 | awk '{print $1 " " $2}' > /work│
+│- Read /levels/current/access.log       ││/top_ips.txt                                                                                                                            │
+│- Compute the top 5 client IPs by reques││player@dojo:/work$ ▌                                                                                                                    │
+│- Write /work/top_ips.txt with 5 lines: ││                                                                                                                                        │
+│- Sorted by COUNT descending            ││                                                                                                                                        │
+│                                        ││                                                                                                                                        │
+│Session Goals                           ││                                                                                                                                        │
+│- Finish the level                      ││                                                                                                                                        │
+│- Use at most 1 hint(s)                 ││                                                                                                                                        │
+│- Use at most 1 reset(s)                ││                                                                                                                                        │
+│- Target score: 820+                    ││                                                                                                                                        │
+│     ┌ Reference Solutions ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐     │
+│Check│### Canonical pipeline                                                                                                                                                │     │
+│✓ Cre│awk '{print $1}' /levels/current/access.log \                                                                                                                         │     │
+│✓ Exa│  | sort \                                                                                                                                                            │     │
+│✓ For│  | uniq -c \                                                                                                                                                         │     │
+│✓ Sor│  | sort -nr \                                                                                                                                                        │     │
+│✓ Mat│  | head -n 5 \                                                                                                                                                       │     │
+│     │  | awk '{print $1 " " $2}' \                                                                                                                                         │     │
+│Hints│  > /work/top_ips.txt                                                                                                                                                 │     │
+│1. [a│                                                                                                                                                                      │     │
+│2. [l│                                                                                                                                                                      │     │
+│3. [l│                                                                                                                                                                      │     │
+│     │Ctrl+C: Copy text                                                                                                                                                     │     │
+│Score│                                                                                                                                                                      │     │
+│Curre│                                                                                                                                                                      │     │
+│Hints│                                                                                                                                                                      │     │
+│Strea│                                                                                                                                                                      │     │
+│     │                                                                                                                                                                      │     │
+│Badge│                                                                                                                                                                      │     │
+│- No │                                                                                                                                                                      │     │
+│     │                                                                                                                                                                      │     │
+│     │                                                                                                                                                                      │     │
+│     │                                                                                                                                                                      │     │
+│     │                                                                                                                                                                      │     │
+│     │                                                                                                                                                                      │     │
+│     └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘     │
+│                                        ││                                                                                                                                        │
+│                                        ││                                                                                                                                        │
+│                                        ││                                                                                                                                        │
+│                                        ││                                                                                                                                        │
+│                                        ││                                                                                                                                        │
+│                                        ││                                                                                                                                        │
+│                                        ││                                                                                                                                        │
+│                                        ││                                                                                                                                        │
+│                                        ││                                                                                                                                        │
+│                                        ││                                                                                                                                        │
+│                                        ││                                                                                                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1 Hints • F2 Goal • F4 Journal • F5 Check • F6 Reset • F9 Scrollback • F10 Menu | PASS

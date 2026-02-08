@@ -1,0 +1,48 @@
+ CLI Dojo | Free Play | builtin-core/level-001-pipes-101 | 30s | Engine: docker
+┌ HUD ───────────────────────────────────┐┌ Terminal ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│Objective                               ││player@dojo:/work$ printf '1\twrong\n' > /work/animal_counts.txt                                                    │
+│- Read /levels/current/animals.txt      ││player@dojo:/work$ ▌                                                                                                │
+│- Create /work/animal_counts.txt with co││                                                                                                                    │
+│- When counts tie, sort by animal name A││                                                                                                                    │
+│- Format each line as: COUNT<TAB>ANIMAL ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│Session Goals                           ││                                                                                                                    │
+│- Finish the level                      ││                                                                                                                    │
+│- Use at most 3 hint(s)                 ││                                                                                                                    │
+│- Use at most 2 reset(s)                ││                                                                                                                    │
+│- Tar┌ Artifact Diff ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐     │
+│     │## /work/animal_counts.txt vs expected                                                                                                            │     │
+│Check│--- expected                                                                                                                                      │     │
+│✓ Cre│+++ actual                                                                                                                                        │     │
+│✗ Out│-3    cat                                                                                                                                         │     │
+│✓ Bon│+1    wrong                                                                                                                                       │     │
+│     │-3    dog                                                                                                                                         │     │
+│Hints│-2    fox                                                                                                                                         │     │
+│1. [a│-1    alpaca                                                                                                                                      │     │
+│`sort│-1    koala                                                                                                                                       │     │
+│     │                                                                                                                                                  │     │
+│2. [l│                                                                                                                                                  │     │
+│3. [l│Ctrl+C: Copy text                                                                                                                                 │     │
+│     │                                                                                                                                                  │     │
+│Score│                                                                                                                                                  │     │
+│Curre│                                                                                                                                                  │     │
+│Hints│                                                                                                                                                  │     │
+│Strea│                                                                                                                                                  │     │
+│     │                                                                                                                                                  │     │
+│     │                                                                                                                                                  │     │
+│     │                                                                                                                                                  │     │
+│     │                                                                                                                                                  │     │
+│     │                                                                                                                                                  │     │
+│     └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘     │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1 Hints • F2 Goal • F4 Journal • F5 Check • F6 Reset • F9 Scrollback • F10 Menu | FAIL

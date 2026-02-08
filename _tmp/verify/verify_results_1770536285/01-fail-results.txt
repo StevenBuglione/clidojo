@@ -1,0 +1,48 @@
+ CLI Dojo | Free Play | builtin-core/level-001-pipes-101 | 22s | Engine: docker
+┌ HUD ───────────────────────────────────┐┌ Terminal ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│Objective                               ││player@dojo:/work$ printf '1\twrong\n' > /work/animal_counts.txt                                                    │
+│- Read /levels/current/animals.txt      ││player@dojo:/work$ ▌                                                                                                │
+│- Create /work/animal_counts.txt with co││                                                                                                                    │
+│- When counts tie, sort by animal name A││                                                                                                                    │
+│- Format each line as: COUNT<TAB>ANIMAL ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│Session Goals                           ││                                                                                                                    │
+│- Finish the level                      ││                                                                                                                    │
+│- Use┌ Results ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐     │
+│- Use│FAIL                                                                                                                                              │     │
+│- Tar│                                                                                                                                                  │     │
+│     │Some required checks failed.                                                                                                                      │     │
+│Check│                                                                                                                                                  │     │
+│✓ Cre│✓ out_exists: ok                                                                                                                                  │     │
+│✗ Out│✗ content_exact: Your counts/format do not match expected.                                                                                        │     │
+│✓ Bon│✓ no_useless_cat_bonus: ok                                                                                                                        │     │
+│     │✗ pipe_bonus: need 1 matches got 0                                                                                                                │     │
+│Hints│                                                                                                                                                  │     │
+│1. [a│Scoring                                                                                                                                           │     │
+│`sort│- time: 0                                                                                                                                         │     │
+│     │- hint: 0                                                                                                                                         │     │
+│2. [l│- reset: 0                                                                                                                                        │     │
+│3. [l│- bonus: 50                                                                                                                                       │     │
+│     │- total: 1050                                                                                                                                     │     │
+│Score│                                                                                                                                                  │     │
+│Curre│Final Score: 1050                                                                                                                                 │     │
+│Hints│                                                                                                                                                  │     │
+│Strea│Actions:                                                                                                                                          │     │
+│     │> Show reference solutions                                                                                                                        │     │
+│     │  Open diff                                                                                                                                       │     │
+│     │  Try again                                                                                                                                       │     │
+│     │  Close                                                                                                                                           │     │
+│     │                                                                                                                                                  │     │
+│     │Ctrl+C: Copy results                                                                                                                              │     │
+│     └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘     │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+│                                        ││                                                                                                                    │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1 Hints • F2 Goal • F4 Journal • F5 Check • F6 Reset • F9 Scrollback • F10 Menu | FAIL

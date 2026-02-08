@@ -1,0 +1,40 @@
+ CLI Dojo | Free Play | builtin-core/level-001-pipes-101 | 2s | Engine: docker
+┌ HUD ───────────────────────────────────┐┌ Terminal ──────────────────────────────────────────────────────────────────────────────────────┐
+│Objective                               ││player@dojo:/work$ sort /levels/current/animals.txt | uniq -c | sed -E 's/^[[:space:]]*([0-9]+)[│
+│- Read /levels/current/animals.txt      ││[:space:]]+(.+)$/\1\t\2/' | sort -k1,1nr -k2,2 > /work/animal_counts.txt                        │
+│- Create /work/animal_counts.txt with co││player@dojo:/work$ ▌                                                                            │
+│- When counts tie, sort by animal name A││                                                                                                │
+│- Format each line as: COUNT<TAB>ANIMAL ││                                                                                                │
+│     ┌ Results ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐     │
+│Sessi│PASS                                                                                                                          │     │
+│- Fin│                                                                                                                              │     │
+│- Use│All required checks passed.                                                                                                   │     │
+│- Use│                                                                                                                              │     │
+│- Tar│✓ out_exists: ok                                                                                                              │     │
+│     │✓ content_exact: ok                                                                                                           │     │
+│Check│✓ no_useless_cat_bonus: ok                                                                                                    │     │
+│✓ Cre│✓ pipe_bonus: ok                                                                                                              │     │
+│✓ Out│                                                                                                                              │     │
+│✓ Bon│Scoring                                                                                                                       │     │
+│     │- time: 0                                                                                                                     │     │
+│Hints│- hint: 0                                                                                                                     │     │
+│1. [a│- reset: 0                                                                                                                    │     │
+│`sort│- bonus: 100                                                                                                                  │     │
+│     │- total: 1100                                                                                                                 │     │
+│2. [l│                                                                                                                              │     │
+│3. [l│Final Score: 1100                                                                                                             │     │
+│     │                                                                                                                              │     │
+│Score│Actions:                                                                                                                      │     │
+│Curre│> Show reference solutions                                                                                                    │     │
+│Hints│  Continue                                                                                                                    │     │
+│Strea│  Close                                                                                                                       │     │
+│     │                                                                                                                              │     │
+│Maste│Ctrl+C: Copy results                                                                                                          │     │
+│▌│   └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘     │
+│                                        ││                                                                                                │
+│Badges                                  ││                                                                                                │
+│- No Useless Cat                        ││                                                                                                │
+│                                        ││                                                                                                │
+│                                        ││                                                                                                │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1 Hints • F2 Goal • F4 Journal • F5 Check • F6 Reset • F9 Scrollback • F10 Menu | PASS

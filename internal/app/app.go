@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -55,15 +57,17 @@ type App struct {
 	hintsUsed    int
 	hintRevealed int
 	resetCount   int
+	passStreak   int
 	checkFails   int
 	checkAttempt int
 	menuOpen     bool
 	hintsOpen    bool
 	goalOpen     bool
 	journalOpen  bool
+	resultOpen   bool
 
-	checkStatus map[string]string
-	lastResult  grading.Result
+	checkStatus     map[string]string
+	lastResult      grading.Result
 	elapsedOverride string
 
 	devMu     sync.Mutex
@@ -77,6 +81,23 @@ type App struct {
 		Pending   bool
 		Error     string
 	}
+
+	checkMu              sync.Mutex
+	checkRunning         bool
+	checkQueued          bool
+	queuedManual         bool
+	autoCheckMu          sync.Mutex
+	autoCheckStop        context.CancelFunc
+	autoCheckMode        string
+	autoCheckDebounce    time.Duration
+	autoCheckQuietFail   bool
+	autoCheckPending     bool
+	autoCheckLastEvent   time.Time
+	autoCheckLastCmdSig  string
+	autoCheckLastWorkSig string
+
+	imageMu      sync.Mutex
+	ensuredImage map[string]bool
 }
 
 func New(cfg Config) (*App, error) {
@@ -112,25 +133,33 @@ func New(cfg Config) (*App, error) {
 	}
 
 	termPane := term.NewTerminalPane(nil)
-	view := ui.New(ui.Options{ASCIIOnly: cfg.ASCIIOnly, Debug: cfg.DebugLayout, TermPane: termPane})
+	view := ui.New(ui.Options{
+		ASCIIOnly:    cfg.ASCIIOnly,
+		Debug:        cfg.DebugLayout,
+		TermPane:     termPane,
+		StyleVariant: cfg.UI.StyleVariant,
+		MotionLevel:  cfg.UI.MotionLevel,
+		MouseScope:   cfg.UI.MouseScope,
+	})
 	termPane.SetDirty(view.RequestDraw)
 
 	a := &App{
-		cfg:         cfg,
-		logger:      logger,
-		store:       store,
-		loader:      loader,
-		grader:      grading.NewGrader(),
-		sandbox:     sandbox.NewManager(cfg.SandboxMode),
-		demo:        devtools.NewManager(),
-		view:        view,
-		term:        termPane,
-		sessionID:   uuid.NewString(),
-		packs:       packs,
-		pack:        packs[0],
-		level:       packs[0].LoadedLevels[0],
-		checkStatus: map[string]string{},
-		screen:      ui.ScreenMainMenu,
+		cfg:          cfg,
+		logger:       logger,
+		store:        store,
+		loader:       loader,
+		grader:       grading.NewGrader(),
+		sandbox:      sandbox.NewManager(cfg.SandboxMode),
+		demo:         devtools.NewManager(),
+		view:         view,
+		term:         termPane,
+		sessionID:    uuid.NewString(),
+		packs:        packs,
+		pack:         packs[0],
+		level:        packs[0].LoadedLevels[0],
+		checkStatus:  map[string]string{},
+		screen:       ui.ScreenMainMenu,
+		ensuredImage: map[string]bool{},
 	}
 	view.SetController(a)
 	view.SetCatalog(a.catalog())
@@ -191,6 +220,7 @@ func (a *App) Close() {
 }
 
 func (a *App) stopLevelRuntime(ctx context.Context) {
+	a.stopAutoCheckLoop()
 	if a.handle != nil {
 		_ = a.handle.Stop(ctx)
 		a.handle = nil
@@ -202,6 +232,7 @@ func (a *App) stopLevelRuntime(ctx context.Context) {
 func (a *App) startLevel(ctx context.Context, newRun bool) error {
 	a.stopLevelRuntime(ctx)
 	a.view.SetResult(ui.ResultState{})
+	a.resultOpen = false
 	a.view.SetReferenceText("", false)
 	a.view.SetDiffText("", false)
 
@@ -211,9 +242,11 @@ func (a *App) startLevel(ctx context.Context, newRun bool) error {
 		return err
 	}
 
-	image := a.pack.Image.Ref
-	if a.level.Image.Ref != "" {
-		image = a.level.Image.Ref
+	ensureCtx, ensureCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	image, err := a.ensureLevelImage(ensureCtx)
+	ensureCancel()
+	if err != nil {
+		return err
 	}
 	readOnly := true
 	if a.level.Sandbox.ReadOnlyRoot != nil {
@@ -313,6 +346,7 @@ func (a *App) startLevel(ctx context.Context, newRun bool) error {
 	if err := a.demo.SetState(ctx, "", "playing", true); err != nil {
 		a.logger.Error("dev_state.write_failed", map[string]any{"state": "playing", "error": err.Error()})
 	}
+	a.startAutoCheckLoop()
 	a.logger.Info("level.start.done", map[string]any{"level": a.level.LevelID})
 	return nil
 }
@@ -326,21 +360,22 @@ func (a *App) syncPlayingState(score int, badges []string) {
 		checks = append(checks, ui.CheckRow{ID: c.ID, Description: c.Description, Status: a.checkStatus[c.ID]})
 	}
 	a.view.SetPlayingState(ui.PlayingState{
-		ModeLabel: a.modeLabel(),
-		PackID:    a.pack.PackID,
-		LevelID:   a.level.LevelID,
+		ModeLabel:    a.modeLabel(),
+		PackID:       a.pack.PackID,
+		LevelID:      a.level.LevelID,
 		ElapsedLabel: a.elapsedOverride,
-		HudWidth:  a.hudWidth(),
-		Objective: a.level.Objective.Bullets,
-		Checks:    checks,
-		Hints:     a.buildHintRows(),
-		Engine:    a.engine.Name,
-		StartedAt: a.startTime,
-		HintsUsed: a.hintsUsed,
-		Resets:    a.resetCount,
-		Score:     score,
-		Streak:    0,
-		Badges:    badges,
+		HudWidth:     a.hudWidth(),
+		Objective:    a.level.Objective.Bullets,
+		Checks:       checks,
+		Hints:        a.buildHintRows(),
+		Engine:       a.engine.Name,
+		StartedAt:    a.startTime,
+		HintsUsed:    a.hintsUsed,
+		Resets:       a.resetCount,
+		Score:        score,
+		Streak:       a.passStreak,
+		Badges:       badges,
+		SessionGoals: a.sessionGoalsForLevel(),
 	})
 }
 
@@ -474,6 +509,7 @@ func (a *App) OnBackToMainMenu() {
 	a.view.SetGoalOpen(false)
 	a.view.SetJournalOpen(false)
 	a.view.SetResult(ui.ResultState{})
+	a.resultOpen = false
 	a.view.SetReferenceText("", false)
 	a.view.SetDiffText("", false)
 	a.screen = ui.ScreenMainMenu
@@ -492,10 +528,65 @@ func (a *App) OnCheck() {
 		a.view.FlashStatus("start a level first")
 		return
 	}
+	a.enqueueCheck(true, "manual")
+}
+
+func (a *App) enqueueCheck(manual bool, source string) {
+	a.checkMu.Lock()
+	if manual {
+		a.queuedManual = true
+	}
+	if a.checkRunning {
+		a.checkQueued = true
+		a.checkMu.Unlock()
+		return
+	}
+	nextManual := a.queuedManual
+	a.queuedManual = false
+	a.checkRunning = true
+	a.checkMu.Unlock()
+
+	go a.runCheckQueue(nextManual, source)
+}
+
+func (a *App) runCheckQueue(manual bool, source string) {
+	nextManual := manual
+	nextSource := source
+	for {
+		a.executeCheck(nextManual, nextSource)
+
+		a.checkMu.Lock()
+		if !a.checkQueued {
+			a.checkRunning = false
+			a.checkMu.Unlock()
+			return
+		}
+		nextManual = a.queuedManual
+		a.queuedManual = false
+		a.checkQueued = false
+		a.checkMu.Unlock()
+		nextSource = "queued"
+	}
+}
+
+func (a *App) executeCheck(manual bool, source string) {
+	if !a.activeLevel || a.handle == nil {
+		return
+	}
+	if !manual && a.autoCheckBlockedByOverlay() {
+		a.requeueAutoCheck()
+		return
+	}
+
+	a.view.SetChecking(true)
+	defer a.view.SetChecking(false)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	a.view.FlashStatus("Checking...")
+	if manual {
+		a.view.FlashStatus("Checking...")
+	}
 	a.checkAttempt++
 
 	checks := a.levelChecksForGrading()
@@ -556,7 +647,12 @@ func (a *App) OnCheck() {
 		})
 	}
 	if err != nil {
-		a.view.FlashStatus("Check failed: " + err.Error())
+		msg := "Check failed: " + err.Error()
+		if manual {
+			a.view.FlashStatus(msg)
+		} else {
+			a.logger.Error("autocheck.failed", map[string]any{"source": source, "error": err.Error()})
+		}
 		return
 	}
 	if result.Kind == "" {
@@ -576,24 +672,32 @@ func (a *App) OnCheck() {
 		}
 	}
 	if result.EngineDebug.Engine == "" {
-		result.EngineDebug = grading.EngineDebug{Engine: a.engine.Name, ContainerName: a.handle.ContainerName(), ImageRef: ifThenElse(a.level.Image.Ref != "", a.level.Image.Ref, a.pack.Image.Ref)}
+		result.EngineDebug = grading.EngineDebug{
+			Engine:        a.engine.Name,
+			ContainerName: a.handle.ContainerName(),
+			ImageRef:      ifThenElse(a.level.Image.Ref != "", a.level.Image.Ref, a.pack.Image.Ref),
+		}
 	}
 
 	a.lastResult = result
 	_ = a.store.RecordCheckAttempt(ctx, a.runID, result.Passed)
 
 	rows := make([]ui.CheckResultRow, 0, len(result.Checks))
+	failedRun := false
 	for _, c := range result.Checks {
 		rows = append(rows, ui.CheckResultRow{ID: c.ID, Passed: c.Passed, Message: firstNonEmpty(c.Message, c.Summary)})
 		if _, ok := a.checkStatus[c.ID]; ok {
 			status := "fail"
 			if c.Passed {
 				status = "pass"
-			} else {
-				a.checkFails++
+			} else if c.Required {
+				failedRun = true
 			}
 			a.checkStatus[c.ID] = status
 		}
+	}
+	if failedRun {
+		a.checkFails++
 	}
 
 	breakdown := make([]ui.BreakdownRow, 0, len(result.Score.Breakdown)+1)
@@ -602,29 +706,236 @@ func (a *App) OnCheck() {
 	}
 	breakdown = append(breakdown, ui.BreakdownRow{Label: "total", Value: fmt.Sprintf("%d", result.Score.TotalPoints)})
 
+	a.applyResultStreak(result.Passed, failedRun)
 	a.syncPlayingState(result.Score.TotalPoints, a.badgesFor(result.Passed))
-	a.view.SetResult(ui.ResultState{
-		Visible:          true,
-		Passed:           result.Passed,
-		Summary:          resultSummary(result.Passed),
-		Checks:           rows,
-		Score:            result.Score.TotalPoints,
-		Breakdown:        breakdown,
-		CanShowReference: result.Passed || a.level.Difficulty <= 2,
-		CanOpenDiff:      len(result.Artifacts) > 0,
-		PrimaryAction:    ifThenElse(result.Passed, "Continue", "Try again"),
-	})
+	quietFail := a.autoCheckQuietFail
+	if manual || result.Passed || !quietFail {
+		a.resultOpen = true
+		a.view.SetResult(ui.ResultState{
+			Visible:          true,
+			Passed:           result.Passed,
+			Summary:          a.resultSummary(result.Passed),
+			Checks:           rows,
+			Score:            result.Score.TotalPoints,
+			Breakdown:        breakdown,
+			CanShowReference: result.Passed || a.level.Difficulty <= 2,
+			CanOpenDiff:      len(result.Artifacts) > 0,
+			PrimaryAction:    ifThenElse(result.Passed, "Continue", "Try again"),
+		})
+	} else {
+		a.resultOpen = false
+		a.view.SetResult(ui.ResultState{})
+	}
 
 	if result.Passed {
-		a.view.FlashStatus("PASS")
+		if err := a.enqueueSpacedReviews(context.Background()); err != nil {
+			a.logger.Error("review_queue.enqueue_failed", map[string]any{"level": a.level.LevelID, "error": err.Error()})
+		}
+		if a.passStreak > 1 {
+			a.view.FlashStatus(fmt.Sprintf("PASS • Combo x%d", a.passStreak))
+		} else {
+			a.view.FlashStatus("PASS")
+		}
 		a.setDevState("results_pass", "results_pass")
-	} else {
+		if err := a.demo.SetState(context.Background(), "", "results_pass", true); err != nil {
+			a.logger.Error("dev_state.write_failed", map[string]any{"state": "results_pass", "error": err.Error()})
+		}
+		return
+	}
+
+	if manual {
 		a.view.FlashStatus("FAIL")
 		a.setDevState("results_fail", "results_fail")
+		if err := a.demo.SetState(context.Background(), "", "results_fail", true); err != nil {
+			a.logger.Error("dev_state.write_failed", map[string]any{"state": "results_fail", "error": err.Error()})
+		}
+		return
 	}
-	if err := a.demo.SetState(context.Background(), "", a.devState.State, true); err != nil {
-		a.logger.Error("dev_state.write_failed", map[string]any{"state": a.devState.State, "error": err.Error()})
+	a.view.FlashStatus("Auto-check updated")
+	a.setDevState("playing", "playing")
+}
+
+func (a *App) autoCheckBlockedByOverlay() bool {
+	return a.menuOpen || a.hintsOpen || a.goalOpen || a.journalOpen || a.resultOpen
+}
+
+func (a *App) startAutoCheckLoop() {
+	a.stopAutoCheckLoop()
+	if !a.activeLevel || a.handle == nil {
+		return
 	}
+	mode, debounce, quietFail := a.levelAutoCheckConfig()
+	if mode == "off" {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	a.autoCheckMu.Lock()
+	a.autoCheckStop = cancel
+	a.autoCheckMode = mode
+	a.autoCheckDebounce = debounce
+	a.autoCheckQuietFail = quietFail
+	a.autoCheckPending = false
+	a.autoCheckLastEvent = time.Time{}
+	a.autoCheckLastCmdSig = a.cmdLogSignature()
+	a.autoCheckLastWorkSig = a.workDirSignature()
+	a.autoCheckMu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !a.activeLevel || a.handle == nil {
+					continue
+				}
+				if a.pollAutoCheckSources() {
+					a.autoCheckMu.Lock()
+					a.autoCheckPending = true
+					a.autoCheckLastEvent = time.Now()
+					a.autoCheckMu.Unlock()
+				}
+				a.autoCheckMu.Lock()
+				pending := a.autoCheckPending
+				lastEvent := a.autoCheckLastEvent
+				debounce := a.autoCheckDebounce
+				a.autoCheckMu.Unlock()
+				if pending && !lastEvent.IsZero() && time.Since(lastEvent) >= debounce {
+					a.autoCheckMu.Lock()
+					a.autoCheckPending = false
+					a.autoCheckMu.Unlock()
+					a.enqueueCheck(false, "auto")
+				}
+			}
+		}
+	}()
+}
+
+func (a *App) stopAutoCheckLoop() {
+	a.autoCheckMu.Lock()
+	cancel := a.autoCheckStop
+	a.autoCheckStop = nil
+	a.autoCheckPending = false
+	a.autoCheckLastEvent = time.Time{}
+	a.autoCheckMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (a *App) requeueAutoCheck() {
+	a.autoCheckMu.Lock()
+	defer a.autoCheckMu.Unlock()
+	if a.autoCheckMode == "" || a.autoCheckMode == "off" {
+		return
+	}
+	a.autoCheckPending = true
+	a.autoCheckLastEvent = time.Now()
+}
+
+func (a *App) levelAutoCheckConfig() (string, time.Duration, bool) {
+	mode := strings.TrimSpace(a.cfg.Gameplay.AutoCheckDefault)
+	if mode == "" {
+		mode = "command_and_fs_debounce"
+	}
+	debounceMS := a.cfg.Gameplay.AutoCheckDebounceMS
+	if debounceMS <= 0 {
+		debounceMS = 800
+	}
+	quietFail := true
+	if strings.TrimSpace(a.level.XAutoCheck.Mode) != "" {
+		mode = strings.TrimSpace(a.level.XAutoCheck.Mode)
+	}
+	if a.level.XAutoCheck.DebounceMS > 0 {
+		debounceMS = a.level.XAutoCheck.DebounceMS
+	}
+	if a.level.XAutoCheck.QuietFail != nil {
+		quietFail = *a.level.XAutoCheck.QuietFail
+	}
+	return mode, time.Duration(debounceMS) * time.Millisecond, quietFail
+}
+
+func (a *App) pollAutoCheckSources() bool {
+	a.autoCheckMu.Lock()
+	mode := a.autoCheckMode
+	lastCmdSig := a.autoCheckLastCmdSig
+	lastWorkSig := a.autoCheckLastWorkSig
+	a.autoCheckMu.Unlock()
+
+	changed := false
+	if mode == "command_debounce" || mode == "command_and_fs_debounce" {
+		cmdSig := a.cmdLogSignature()
+		if cmdSig != "" && cmdSig != lastCmdSig {
+			changed = true
+			a.autoCheckMu.Lock()
+			a.autoCheckLastCmdSig = cmdSig
+			a.autoCheckMu.Unlock()
+		}
+	}
+	if mode == "command_and_fs_debounce" {
+		workSig := a.workDirSignature()
+		if workSig != "" && workSig != lastWorkSig {
+			changed = true
+			a.autoCheckMu.Lock()
+			a.autoCheckLastWorkSig = workSig
+			a.autoCheckMu.Unlock()
+		}
+	}
+	return changed
+}
+
+func (a *App) cmdLogSignature() string {
+	if a.handle == nil {
+		return ""
+	}
+	info, err := os.Stat(filepath.Join(a.handle.WorkDir(), ".dojo_cmdlog"))
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
+}
+
+func (a *App) workDirSignature() string {
+	if a.handle == nil {
+		return ""
+	}
+	workDir := a.handle.WorkDir()
+	var b strings.Builder
+	_ = filepath.WalkDir(workDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, relErr := filepath.Rel(workDir, path)
+		if relErr != nil || rel == "." {
+			return nil
+		}
+		base := filepath.Base(rel)
+		if base == ".dojo_cmdlog" || base == ".dojo_bash_history" {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return nil
+		}
+		b.WriteString(rel)
+		b.WriteString("|")
+		if d.IsDir() {
+			b.WriteString("d")
+		} else {
+			b.WriteString("f")
+		}
+		b.WriteString("|")
+		b.WriteString(strconv.FormatInt(info.Size(), 10))
+		b.WriteString("|")
+		b.WriteString(strconv.FormatInt(info.ModTime().UnixNano(), 10))
+		b.WriteString("\n")
+		return nil
+	})
+	return b.String()
 }
 
 func (a *App) levelChecksForGrading() []grading.CheckSpec {
@@ -769,8 +1080,21 @@ func (a *App) OnChangeLevel() {
 }
 
 func (a *App) OnOpenSettings() {
-	text := fmt.Sprintf("Sandbox: %s\nEngine: %s\nData dir: %s\nASCII only: %t\nDebug layout: %t\nKeep artifacts: %t\nDev HTTP: %s",
-		a.cfg.SandboxMode, a.engine.Name, a.cfg.DataDir, a.cfg.ASCIIOnly, a.cfg.DebugLayout, a.cfg.KeepArtifacts, a.cfg.DevHTTP)
+	text := fmt.Sprintf(
+		"Sandbox: %s\nEngine: %s\nData dir: %s\nASCII only: %t\nDebug layout: %t\nKeep artifacts: %t\nDev HTTP: %s\nAuto-check: %s (%dms)\nStyle: %s\nMotion: %s\nMouse scope: %s",
+		a.cfg.SandboxMode,
+		a.engine.Name,
+		a.cfg.DataDir,
+		a.cfg.ASCIIOnly,
+		a.cfg.DebugLayout,
+		a.cfg.KeepArtifacts,
+		a.cfg.DevHTTP,
+		a.cfg.Gameplay.AutoCheckDefault,
+		a.cfg.Gameplay.AutoCheckDebounceMS,
+		a.cfg.UI.StyleVariant,
+		a.cfg.UI.MotionLevel,
+		a.cfg.UI.MouseScope,
+	)
 	a.view.SetInfo("Settings", text, true)
 }
 
@@ -800,6 +1124,7 @@ func (a *App) OnNextLevel() {
 
 func (a *App) OnTryAgain() {
 	a.view.SetResult(ui.ResultState{})
+	a.resultOpen = false
 }
 
 func (a *App) OnShowReferenceSolutions() {
@@ -920,6 +1245,7 @@ func (a *App) applyDemoScenario(ctx context.Context, scenario string) error {
 	a.view.SetDiffText("", false)
 	a.view.SetInfo("", "", false)
 	a.view.SetResult(ui.ResultState{})
+	a.resultOpen = false
 
 	a.menuOpen = s.MenuOpen
 	a.hintsOpen = s.HintsOpen
@@ -975,6 +1301,7 @@ func (a *App) applyDemoScenario(ctx context.Context, scenario string) error {
 			CanOpenDiff:      !passed,
 			PrimaryAction:    ifThenElse(passed, "Continue", "Try again"),
 		})
+		a.resultOpen = true
 	}
 
 	a.logger.Info("dev.demo.apply.ready", map[string]any{"requested": scenario, "resolved": s.Name})
@@ -1183,6 +1510,8 @@ func (a *App) catalog() []ui.PackSummary {
 				SummaryMD:        lv.SummaryMD,
 				ToolFocus:        append([]string(nil), lv.ToolFocus...),
 				ObjectiveBullets: append([]string(nil), lv.Objective.Bullets...),
+				Concepts:         append([]string(nil), lv.XTeaching.Concepts...),
+				Tier:             lv.XProgression.Tier,
 			})
 		}
 		out = append(out, ps)
@@ -1193,9 +1522,11 @@ func (a *App) catalog() []ui.PackSummary {
 func (a *App) mainMenuState() ui.MainMenuState {
 	summary, _ := a.store.GetSummary(context.Background())
 	last, _ := a.store.GetLastRun(context.Background())
+	dueReviews, _ := a.store.CountDueReviews(context.Background(), time.Now())
 	state := ui.MainMenuState{
 		EngineName: a.engine.Name,
 		PackCount:  len(a.packs),
+		DueReviews: dueReviews,
 		LevelRuns:  summary.LevelRuns,
 		Passes:     summary.Passes,
 		Attempts:   summary.Attempts,
@@ -1224,6 +1555,7 @@ func (a *App) demoMainMenuState() ui.MainMenuState {
 		EngineName:  firstNonEmpty(a.engine.Name, "mock"),
 		PackCount:   len(a.packs),
 		LevelCount:  levelCount,
+		DueReviews:  2,
 		LastPackID:  a.pack.PackID,
 		LastLevelID: a.level.LevelID,
 		Streak:      3,
@@ -1235,11 +1567,15 @@ func (a *App) demoMainMenuState() ui.MainMenuState {
 	}
 }
 
-func resultSummary(passed bool) string {
-	if passed {
-		return "All required checks passed."
+func (a *App) resultSummary(passed bool) string {
+	if !passed {
+		return "Some required checks failed."
 	}
-	return "Some required checks failed."
+	base := "All required checks passed."
+	if next := a.nextChallengeHint(); next != "" {
+		return base + "\n\n" + next
+	}
+	return base
 }
 
 func currentScore(a *App) int {
@@ -1269,6 +1605,216 @@ func (a *App) badgesFor(passed bool) []string {
 	}
 	sort.Strings(b)
 	return b
+}
+
+func (a *App) applyResultStreak(passed, failedRequired bool) {
+	if passed {
+		a.passStreak++
+		return
+	}
+	if failedRequired {
+		a.passStreak = 0
+	}
+}
+
+func (a *App) nextChallengeHint() string {
+	if len(a.pack.LoadedLevels) == 0 {
+		return ""
+	}
+	cur := -1
+	for i, lv := range a.pack.LoadedLevels {
+		if lv.LevelID == a.level.LevelID {
+			cur = i
+			break
+		}
+	}
+	if cur < 0 {
+		return ""
+	}
+	nextIdx := (cur + 1) % len(a.pack.LoadedLevels)
+	next := a.pack.LoadedLevels[nextIdx]
+	if next.LevelID == a.level.LevelID {
+		return "Next challenge: replay this level with fewer hints/resets for mastery."
+	}
+	return fmt.Sprintf("Next challenge: %s (difficulty %d, ~%d min).", next.Title, next.Difficulty, next.EstimatedMinutes)
+}
+
+func (a *App) sessionGoalsForLevel() []string {
+	goals := []string{"Finish the level"}
+	mastery := a.level.XProgression.Mastery
+	if mastery.MaxHints > 0 {
+		goals = append(goals, fmt.Sprintf("Use at most %d hint(s)", mastery.MaxHints))
+	} else {
+		goals = append(goals, "Try a no-hint run")
+	}
+	if mastery.MaxResets > 0 {
+		goals = append(goals, fmt.Sprintf("Use at most %d reset(s)", mastery.MaxResets))
+	} else {
+		goals = append(goals, "Avoid resets")
+	}
+	if mastery.MinScore > 0 {
+		goals = append(goals, fmt.Sprintf("Target score: %d+", mastery.MinScore))
+	}
+	return goals
+}
+
+func (a *App) ensureLevelImage(ctx context.Context) (string, error) {
+	image := a.pack.Image.Ref
+	if strings.TrimSpace(a.level.Image.Ref) != "" {
+		image = strings.TrimSpace(a.level.Image.Ref)
+	}
+	if strings.TrimSpace(image) == "" {
+		return "", fmt.Errorf("no image configured for %s/%s", a.pack.PackID, a.level.LevelID)
+	}
+	if a.cfg.SandboxMode == "mock" || a.engine.Name == "mock" {
+		return image, nil
+	}
+	if a.isImageEnsured(image) {
+		return image, nil
+	}
+
+	engine := strings.TrimSpace(a.engine.Name)
+	if engine == "" {
+		engine = strings.TrimSpace(a.sandbox.CurrentEngine())
+	}
+	if engine == "" || engine == "mock" {
+		return "", fmt.Errorf("container engine is not available for image ensure")
+	}
+
+	if exists, err := a.imageExists(ctx, engine, image); err != nil {
+		return "", err
+	} else if exists {
+		a.markImageEnsured(image)
+		return image, nil
+	}
+
+	// Image missing: build or pull according to pack policy.
+	if image == a.pack.Image.Ref && a.pack.Image.Build != nil && !a.pack.Image.Pull {
+		if err := a.buildPackImage(ctx, engine, a.pack); err != nil {
+			return "", err
+		}
+	} else if a.pack.Image.Pull {
+		if err := a.pullImage(ctx, engine, image); err != nil {
+			return "", err
+		}
+	} else if image == a.pack.Image.Ref && a.pack.Image.Build != nil {
+		// build config exists and pull is false-like, allow build fallback.
+		if err := a.buildPackImage(ctx, engine, a.pack); err != nil {
+			return "", err
+		}
+	} else {
+		return "", fmt.Errorf("image %q not found locally (pack %s); set image.pull=true, run make image, or configure image.build", image, a.pack.PackID)
+	}
+
+	a.markImageEnsured(image)
+	return image, nil
+}
+
+func (a *App) isImageEnsured(image string) bool {
+	a.imageMu.Lock()
+	defer a.imageMu.Unlock()
+	return a.ensuredImage[image]
+}
+
+func (a *App) markImageEnsured(image string) {
+	a.imageMu.Lock()
+	defer a.imageMu.Unlock()
+	if a.ensuredImage == nil {
+		a.ensuredImage = map[string]bool{}
+	}
+	a.ensuredImage[image] = true
+}
+
+func (a *App) buildPackImage(ctx context.Context, engine string, pack levels.Pack) error {
+	if pack.Image.Build == nil {
+		return fmt.Errorf("pack %s has no image.build config", pack.PackID)
+	}
+	build := pack.Image.Build
+	contextDir := filepath.Join(pack.Path, build.ContextDir)
+	dockerfile := strings.TrimSpace(build.Dockerfile)
+	if dockerfile == "" {
+		dockerfile = "Dockerfile"
+	}
+	dockerfilePath := filepath.Join(contextDir, dockerfile)
+	args := []string{"build", "-t", pack.Image.Ref, "-f", dockerfilePath}
+	if strings.TrimSpace(build.Target) != "" {
+		args = append(args, "--target", strings.TrimSpace(build.Target))
+	}
+	keys := make([]string, 0, len(build.Args))
+	for k := range build.Args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "--build-arg", fmt.Sprintf("%s=%s", k, build.Args[k]))
+	}
+	args = append(args, contextDir)
+	a.logger.Info("image.ensure.build", map[string]any{
+		"engine": engine,
+		"pack":   pack.PackID,
+		"image":  pack.Image.Ref,
+	})
+	out, err := exec.CommandContext(ctx, engine, args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s build failed for %s: %s", engine, pack.Image.Ref, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (a *App) pullImage(ctx context.Context, engine, image string) error {
+	a.logger.Info("image.ensure.pull", map[string]any{
+		"engine": engine,
+		"image":  image,
+	})
+	out, err := exec.CommandContext(ctx, engine, "pull", image).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s pull failed for %s: %s", engine, image, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (a *App) imageExists(ctx context.Context, engine, image string) (bool, error) {
+	out, err := exec.CommandContext(ctx, engine, "image", "inspect", image).CombinedOutput()
+	if err != nil {
+		msg := strings.ToLower(strings.TrimSpace(string(out)))
+		// Normal "missing image" output from docker/podman.
+		if strings.Contains(msg, "no such image") || strings.Contains(msg, "not found") || strings.Contains(msg, "unable to find") {
+			return false, nil
+		}
+		return false, fmt.Errorf("%s image inspect failed for %s: %s", engine, image, strings.TrimSpace(string(out)))
+	}
+	return len(out) > 0, nil
+}
+
+func (a *App) reviewDaysForLevel() []int {
+	days := append([]int(nil), a.level.XTeaching.ReviewDays...)
+	if len(days) == 0 {
+		return []int{1, 3, 7}
+	}
+	out := make([]int, 0, len(days))
+	for _, d := range days {
+		if d > 0 {
+			out = append(out, d)
+		}
+	}
+	if len(out) == 0 {
+		return []int{1, 3, 7}
+	}
+	return out
+}
+
+func (a *App) enqueueSpacedReviews(ctx context.Context) error {
+	concepts := make([]string, 0, len(a.level.XTeaching.Concepts))
+	for _, concept := range a.level.XTeaching.Concepts {
+		concept = strings.TrimSpace(concept)
+		if concept != "" {
+			concepts = append(concepts, concept)
+		}
+	}
+	if len(concepts) == 0 {
+		return nil
+	}
+	return a.store.EnqueueReviewConcepts(ctx, a.level.LevelID, concepts, a.reviewDaysForLevel(), time.Now())
 }
 
 func containerName(sessionID, levelID string) string {

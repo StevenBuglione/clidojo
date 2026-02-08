@@ -1,0 +1,20 @@
+{"level":"info","msg":"app.start","sandbox":"docker","session":"23773791-c400-4687-aaf1-293c0e7a5ef4","ts":"2026-02-08T07:10:44.429187519Z"}
+{"engine":"docker","level":"info","msg":"engine.detected","ts":"2026-02-08T07:10:44.88087274Z","version":"Docker version 29.2.0, build 0b9d198"}
+{"level":"info","msg":"level.stage_workdir","ts":"2026-02-08T07:10:47.416742372Z","workdir":"/home/sbuglione/.local/share/clidojo/work/23773791-c400-4687-aaf1-293c0e7a5ef4/level-003-top-ips"}
+{"container":"clidojo_23773791_level-003-top-ips","level":"info","mock":false,"msg":"sandbox.started","ts":"2026-02-08T07:10:47.718838684Z"}
+{"level":"info","mode":"pty","msg":"term.mode","ts":"2026-02-08T07:10:47.733090704Z"}
+{"level":"level-003-top-ips","msg":"term.pty.started","ts":"2026-02-08T07:10:47.733726619Z"}
+{"level":"level-003-top-ips","msg":"level.start.sync_state","ts":"2026-02-08T07:10:47.733762868Z"}
+{"level":"level-003-top-ips","msg":"level.start.set_screen","ts":"2026-02-08T07:10:47.733786633Z"}
+{"level":"level-003-top-ips","msg":"level.start.flash","ts":"2026-02-08T07:10:47.734896485Z"}
+{"level":"level-003-top-ips","msg":"level.start.persist_state","ts":"2026-02-08T07:10:47.738579665Z"}
+{"level":"level-003-top-ips","msg":"level.start.done","ts":"2026-02-08T07:10:47.738785228Z"}
+{"level":"info","msg":"level.stage_workdir","ts":"2026-02-08T07:11:01.678897741Z","workdir":"/home/sbuglione/.local/share/clidojo/work/23773791-c400-4687-aaf1-293c0e7a5ef4/level-003-top-ips"}
+{"container":"clidojo_23773791_level-003-top-ips","level":"info","mock":false,"msg":"sandbox.started","ts":"2026-02-08T07:11:01.978785216Z"}
+{"level":"info","mode":"pty","msg":"term.mode","ts":"2026-02-08T07:11:01.97882955Z"}
+{"level":"level-003-top-ips","msg":"term.pty.started","ts":"2026-02-08T07:11:01.979374109Z"}
+{"level":"level-003-top-ips","msg":"level.start.sync_state","ts":"2026-02-08T07:11:01.979408484Z"}
+{"level":"level-003-top-ips","msg":"level.start.set_screen","ts":"2026-02-08T07:11:01.97942701Z"}
+{"level":"level-003-top-ips","msg":"level.start.flash","ts":"2026-02-08T07:11:01.98069634Z"}
+{"level":"level-003-top-ips","msg":"level.start.persist_state","ts":"2026-02-08T07:11:01.982221345Z"}
+{"level":"level-003-top-ips","msg":"level.start.done","ts":"2026-02-08T07:11:01.982407741Z"}

@@ -1,0 +1,50 @@
+ CLI Dojo | Free Play | builtin-core/level-003-top-ips | 25s | Engine: docker
+┌ HUD ───────────────────────────────────┐┌ Terminal ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│Objective                               ││player@dojo:/work$ awk '{print $1}' /levels/current/access.log | sort | uniq -c | sort -nr | head -n 5 | awk '{print $1 " " $2│
+│- Read /levels/current/access.log       ││}' > /work/top_ips.txt                                                                                                        │
+│- Compute the top 5 client IPs by reques││player@dojo:/work$ ▌                                                                                                          │
+│- Write /work/top_ips.txt with 5 lines: ││                                                                                                                              │
+│- Sorted by COUNT descending            ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│Session Goals                           ││                                                                                                                              │
+│- Finish the level                      ││                                                                                                                              │
+│- Use at most 1 hint(s)                 ││                                                                                                                              │
+│- Use┌ Results ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐     │
+│- Tar│PASS                                                                                                                                                        │     │
+│     │                                                                                                                                                            │     │
+│Check│All required checks passed.                                                                                                                                 │     │
+│✓ Cre│                                                                                                                                                            │     │
+│✓ Exa│✓ out_exists: ok                                                                                                                                            │     │
+│✓ For│✓ out_lines_5: ok                                                                                                                                           │     │
+│✓ Sor│✓ out_format: ok                                                                                                                                            │     │
+│✓ Mat│✓ out_sorted: ok                                                                                                                                            │     │
+│     │✓ out_matches_expected: ok                                                                                                                                  │     │
+│Hints│                                                                                                                                                            │     │
+│1. [a│Scoring                                                                                                                                                     │     │
+│2. [l│- time: 0                                                                                                                                                   │     │
+│3. [l│- hint: 0                                                                                                                                                   │     │
+│     │- reset: 0                                                                                                                                                  │     │
+│Score│- bonus: 0                                                                                                                                                  │     │
+│Curre│- total: 1000                                                                                                                                               │     │
+│Hints│                                                                                                                                                            │     │
+│Strea│Final Score: 1000                                                                                                                                           │     │
+│     │                                                                                                                                                            │     │
+│Badge│Actions:                                                                                                                                                    │     │
+│- No │> Show reference solutions                                                                                                                                  │     │
+│     │  Continue                                                                                                                                                  │     │
+│     │  Close                                                                                                                                                     │     │
+│     │                                                                                                                                                            │     │
+│     │Ctrl+C: Copy results                                                                                                                                        │     │
+│     └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘     │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+│                                        ││                                                                                                                              │
+└────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1 Hints • F2 Goal • F4 Journal • F5 Check • F6 Reset • F9 Scrollback • F10 Menu | PASS

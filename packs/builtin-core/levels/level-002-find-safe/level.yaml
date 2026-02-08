@@ -90,6 +90,23 @@ checks:
     pattern: "\\bfind\\b.*-print0\\b"
     min_count: 1
 
+x-autocheck:
+  mode: command_and_fs_debounce
+  debounce_ms: 900
+  quiet_fail: true
+
+x-progression:
+  tier: 2
+  prerequisites: ["level-001-pipes-101"]
+  mastery:
+    min_score: 760
+    max_hints: 2
+    max_resets: 1
+
+x-teaching:
+  concepts: ["find", "xargs", "null-delimited paths", "safe filename handling"]
+  review_days: [1, 3, 7]
+
 reference_solutions:
   - solution_id: sol1
     title: "Safe with -exec"

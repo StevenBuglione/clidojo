@@ -1,0 +1,20 @@
+{"level":"info","msg":"app.start","sandbox":"docker","session":"97c8a7f9-5d8a-43f3-a88a-9379055b7085","ts":"2026-02-08T08:26:26.557198027Z"}
+{"engine":"docker","level":"info","msg":"engine.detected","ts":"2026-02-08T08:26:26.990969098Z","version":"Docker version 29.2.0, build 0b9d198"}
+{"level":"info","msg":"level.stage_workdir","ts":"2026-02-08T08:26:29.521977764Z","workdir":"/tmp/clidojo-docker-fullpath-1770539186/work/97c8a7f9-5d8a-43f3-a88a-9379055b7085/level-001-pipes-101"}
+{"container":"clidojo_97c8a7f9_level-001-pipes-101","level":"info","mock":false,"msg":"sandbox.started","ts":"2026-02-08T08:26:29.854908802Z"}
+{"level":"info","mode":"pty","msg":"term.mode","ts":"2026-02-08T08:26:29.868691474Z"}
+{"level":"level-001-pipes-101","msg":"term.pty.started","ts":"2026-02-08T08:26:29.869224916Z"}
+{"level":"level-001-pipes-101","msg":"level.start.sync_state","ts":"2026-02-08T08:26:29.869254704Z"}
+{"level":"level-001-pipes-101","msg":"level.start.set_screen","ts":"2026-02-08T08:26:29.869271747Z"}
+{"level":"level-001-pipes-101","msg":"level.start.flash","ts":"2026-02-08T08:26:29.869956846Z"}
+{"level":"level-001-pipes-101","msg":"level.start.persist_state","ts":"2026-02-08T08:26:29.870854383Z"}
+{"level":"level-001-pipes-101","msg":"level.start.done","ts":"2026-02-08T08:26:29.871171001Z"}
+{"level":"info","msg":"level.stage_workdir","ts":"2026-02-08T08:26:32.781332781Z","workdir":"/tmp/clidojo-docker-fullpath-1770539186/work/97c8a7f9-5d8a-43f3-a88a-9379055b7085/level-002-find-safe"}
+{"container":"clidojo_97c8a7f9_level-002-find-safe","level":"info","mock":false,"msg":"sandbox.started","ts":"2026-02-08T08:26:33.067420283Z"}
+{"level":"info","mode":"pty","msg":"term.mode","ts":"2026-02-08T08:26:33.086617321Z"}
+{"level":"level-002-find-safe","msg":"term.pty.started","ts":"2026-02-08T08:26:33.087358186Z"}
+{"level":"level-002-find-safe","msg":"level.start.sync_state","ts":"2026-02-08T08:26:33.08740086Z"}
+{"level":"level-002-find-safe","msg":"level.start.set_screen","ts":"2026-02-08T08:26:33.087493052Z"}
+{"level":"level-002-find-safe","msg":"level.start.flash","ts":"2026-02-08T08:26:33.088724124Z"}
+{"level":"level-002-find-safe","msg":"level.start.persist_state","ts":"2026-02-08T08:26:33.089492795Z"}
+{"level":"level-002-find-safe","msg":"level.start.done","ts":"2026-02-08T08:26:33.089642237Z"}

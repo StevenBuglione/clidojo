@@ -298,6 +298,40 @@
       },
       "additionalProperties": true
     },
+    "x-autocheck": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["off", "command_debounce", "command_and_fs_debounce"] },
+        "debounce_ms": { "type": "integer", "minimum": 0 },
+        "quiet_fail": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "x-progression": {
+      "type": "object",
+      "properties": {
+        "tier": { "type": "integer", "minimum": 0 },
+        "prerequisites": { "type": "array", "items": { "type": "string" } },
+        "mastery": {
+          "type": "object",
+          "properties": {
+            "min_score": { "type": "integer" },
+            "max_hints": { "type": "integer" },
+            "max_resets": { "type": "integer" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "x-teaching": {
+      "type": "object",
+      "properties": {
+        "concepts": { "type": "array", "items": { "type": "string" } },
+        "review_days": { "type": "array", "items": { "type": "integer", "minimum": 1 } }
+      },
+      "additionalProperties": true
+    },
     "extensions": { "type": "object", "additionalProperties": true }
   },
   "additionalProperties": true

@@ -1,0 +1,54 @@
+ CLI Dojo | Free Play | builtin-core/level-001-pipes-101 | 20s | Engine: docker
+┌ HUD ───────────────────────────────────┐┌ Terminal ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│Objective                               ││MiB Mem :  64265.5 total,  54859.8 free,   3785.6 used,   6331.0 buff/cache                                                                       │
+│- Read /levels/current/animals.txt      ││MiB Swap:  16384.0 total,  16384.0 free,      0.0 used.  60479.9 avail Mem                                                                        │
+│- Create /work/animal_counts.txt with co││                                                                                                                                                  │
+│- When counts tie, sort by animal name A││  PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND                                                                      │
+│- Format each line as: COUNT<TAB>ANIMAL ││    1 player    20   0    2492    892    800 S   0.0   0.0   0:00.02 sleep                                                                        │
+│                                        ││    7 player    20   0    4196   3352   2804 S   0.0   0.0   0:00.02 bash                                                                         │
+│Session Goals                           ││   31 player    20   0    8588   4472   2604 R   0.0   0.0   0:00.00 top                                                                          │
+│- Finish the level                      ││                                                                                                                                                  │
+│- Use at most 3 hint(s)                 ││                                                                                                                                                  │
+│- Use at most 2 reset(s)                ││                                                                                                                                                  │
+│- Target score: 700+                    ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│Checks                                  ││                                                                                                                                                  │
+│✗ Create /work/animal_counts.txt        ││                                                                                                                                                  │
+│✗ Output matches expected counts + forma││                                                                                                                                                  │
+│✓ Bonus: avoid useless cat (cat file | .││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│Hints                                   ││                                                                                                                                                  │
+│1. [available] Try a pipeline like:     ││                                                                                                                                                  │
+│`sort animals.txt | uniq -c`            ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│2. [locked (after 45s)] (hidden)        ││                                                                                                                                                  │
+│3. [locked (after 90s)] (hidden)        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│Score                                   ││                                                                                                                                                  │
+│Current: 1050                           ││                                                                                                                                                  │
+│Hints: 0  Resets: 0                     ││                                                                                                                                                  │
+│Streak: 0                               ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││                                                                                                                                                  │
+│                                        ││player@dojo:/work$ ls -l /work/vim_test.txt && tail -n 1 /work/vim_test.txt                                                                       │
+│                                        ││ls: cannot access '/work/vim_test.txt': No such file or directory                                                                                 │
+│                                        ││player@dojo:/work$ ▌                                                                                                                              │
+└────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ F1 Hints • F2 Goal • F4 Journal • F5 Check • F6 Reset • F9 Scrollback • F10 Menu | Auto-check updated
