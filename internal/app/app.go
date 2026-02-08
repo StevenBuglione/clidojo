@@ -64,6 +64,7 @@ type App struct {
 
 	checkStatus map[string]string
 	lastResult  grading.Result
+	elapsedOverride string
 
 	devMu     sync.Mutex
 	devServer *http.Server
@@ -272,6 +273,7 @@ func (a *App) startLevel(ctx context.Context, newRun bool) error {
 		a.checkAttempt = 0
 	}
 	a.lastResult = grading.Result{}
+	a.elapsedOverride = ""
 	a.checkStatus = map[string]string{}
 	for _, c := range a.level.Checks {
 		a.checkStatus[c.ID] = "pending"
@@ -282,13 +284,17 @@ func (a *App) startLevel(ctx context.Context, newRun bool) error {
 		if err := os.WriteFile(filepath.Join(workDir, ".dojo_cmdlog"), []byte(a.demo.MockCmdLog(a.level.LevelID)), 0o644); err != nil {
 			return err
 		}
-		if err := a.term.StartPlayback(ctx, a.demo.PlaybackFrames(a.level.LevelID, "playing"), false); err != nil {
+		// Keep playback alive for the level lifecycle; do not bind it to transient
+		// request contexts (e.g. reset/check handlers).
+		if err := a.term.StartPlayback(context.Background(), a.demo.PlaybackFrames(a.level.LevelID, "playing"), false); err != nil {
 			return err
 		}
 		a.logger.Info("term.playback.started", map[string]any{"level": a.level.LevelID})
 	} else {
 		a.logger.Info("term.mode", map[string]any{"mode": "pty"})
-		if err := a.term.Start(ctx, handle.ShellCommand(), handle.Cwd(), handle.Env()); err != nil {
+		// Keep interactive shell lifecycle tied to explicit Stop() calls rather
+		// than short-lived handler contexts.
+		if err := a.term.Start(context.Background(), handle.ShellCommand(), handle.Cwd(), handle.Env()); err != nil {
 			return err
 		}
 		a.logger.Info("term.pty.started", map[string]any{"level": a.level.LevelID})
@@ -323,6 +329,7 @@ func (a *App) syncPlayingState(score int, badges []string) {
 		ModeLabel: a.modeLabel(),
 		PackID:    a.pack.PackID,
 		LevelID:   a.level.LevelID,
+		ElapsedLabel: a.elapsedOverride,
 		HudWidth:  a.hudWidth(),
 		Objective: a.level.Objective.Bullets,
 		Checks:    checks,
@@ -885,12 +892,16 @@ func (a *App) applyDemoScenario(ctx context.Context, scenario string) error {
 	s := a.demo.Resolve(scenario)
 	a.logger.Info("dev.demo.apply.begin", map[string]any{"requested": scenario, "resolved": s.Name, "active_level": a.activeLevel})
 	if s.Name == "main_menu" {
+		a.elapsedOverride = ""
 		a.OnBackToMainMenu()
+		a.view.SetMainMenuState(a.demoMainMenuState())
 		a.logger.Info("dev.demo.apply.main_menu", map[string]any{})
 		return nil
 	}
 	if s.Name == "level_select" {
+		a.elapsedOverride = ""
 		a.OnOpenLevelSelect()
+		a.view.SetMainMenuState(a.demoMainMenuState())
 		a.logger.Info("dev.demo.apply.level_select", map[string]any{})
 		return nil
 	}
@@ -903,10 +914,18 @@ func (a *App) applyDemoScenario(ctx context.Context, scenario string) error {
 		}
 	}
 
+	// Always reset transient overlays before applying a demo state so scenario
+	// transitions are deterministic and don't inherit stale overlay stacks.
+	a.view.SetReferenceText("", false)
+	a.view.SetDiffText("", false)
+	a.view.SetInfo("", "", false)
+	a.view.SetResult(ui.ResultState{})
+
 	a.menuOpen = s.MenuOpen
 	a.hintsOpen = s.HintsOpen
 	a.goalOpen = s.GoalOpen
 	a.journalOpen = s.JournalOpen
+	a.elapsedOverride = "10s"
 	if a.hintsOpen {
 		a.hintRevealed = min(1, len(a.level.Hints))
 	}
@@ -1194,6 +1213,26 @@ func (a *App) mainMenuState() ui.MainMenuState {
 		}
 	}
 	return state
+}
+
+func (a *App) demoMainMenuState() ui.MainMenuState {
+	levelCount := 0
+	for _, p := range a.packs {
+		levelCount += len(p.LoadedLevels)
+	}
+	return ui.MainMenuState{
+		EngineName:  firstNonEmpty(a.engine.Name, "mock"),
+		PackCount:   len(a.packs),
+		LevelCount:  levelCount,
+		LastPackID:  a.pack.PackID,
+		LastLevelID: a.level.LevelID,
+		Streak:      3,
+		LevelRuns:   12,
+		Passes:      9,
+		Attempts:    14,
+		Resets:      2,
+		Tip:         "Use Alt+b and Alt+f in bash to jump by words.",
+	}
 }
 
 func resultSummary(passed bool) string {

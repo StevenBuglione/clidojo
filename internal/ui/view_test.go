@@ -3,10 +3,10 @@ package ui
 import (
 	"context"
 	"testing"
+	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"clidojo/internal/term"
-
-	"github.com/gdamore/tcell/v2"
 )
 
 type mockController struct {
@@ -43,6 +43,10 @@ func (m *mockController) OnShowReferenceSolutions() {}
 func (m *mockController) OnOpenDiff()               {}
 func (m *mockController) OnJournalExplainAI()       {}
 
+func press(v *Root, code rune, mod tea.KeyMod, text string) {
+	_, _ = v.Update(tea.KeyPressMsg{Code: code, Mod: mod, Text: text})
+}
+
 func TestF6OpensResetConfirmWithoutImmediateReset(t *testing.T) {
 	pane := term.NewTerminalPane(nil)
 	v := New(Options{TermPane: pane})
@@ -50,7 +54,7 @@ func TestF6OpensResetConfirmWithoutImmediateReset(t *testing.T) {
 	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 
-	v.captureInput(tcell.NewEventKey(tcell.KeyF6, 0, tcell.ModNone))
+	press(v, tea.KeyF6, 0, "")
 
 	if ctrl.resetCalls != 0 {
 		t.Fatalf("expected no immediate reset call")
@@ -66,21 +70,21 @@ func TestOverlayEscClosesTopModal(t *testing.T) {
 	v.SetScreen(ScreenPlaying)
 	v.SetResult(ResultState{Visible: true, Passed: false, Summary: "x", PrimaryAction: "Try again"})
 
-	v.captureInput(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	press(v, tea.KeyEsc, 0, "")
 	if v.result.Visible {
 		t.Fatalf("expected result modal to close on escape")
 	}
 }
 
-func TestOverlayAllowsModalKeyHandling(t *testing.T) {
+func TestOverlayEnterHandlesModalAction(t *testing.T) {
 	pane := term.NewTerminalPane(nil)
 	v := New(Options{TermPane: pane})
 	v.SetScreen(ScreenPlaying)
 	v.SetMenuOpen(true)
 
-	ev := v.captureInput(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-	if ev == nil {
-		t.Fatalf("expected non-escape keys to reach the active modal")
+	press(v, tea.KeyEnter, 0, "")
+	if v.menuOpen {
+		t.Fatalf("expected menu action to close menu")
 	}
 }
 
@@ -91,8 +95,12 @@ func TestEscPassesThroughToTerminal(t *testing.T) {
 	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 
-	v.captureInput(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	press(v, tea.KeyEsc, 0, "")
 
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for len(ctrl.inputs) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(ctrl.inputs) != 1 || string(ctrl.inputs[0]) != "\x1b" {
 		t.Fatalf("expected escape to be forwarded to terminal")
 	}
@@ -105,8 +113,12 @@ func TestTabPassesThroughToTerminal(t *testing.T) {
 	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 
-	v.captureInput(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+	press(v, tea.KeyTab, 0, "")
 
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for len(ctrl.inputs) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(ctrl.inputs) != 1 || string(ctrl.inputs[0]) != "\t" {
 		t.Fatalf("expected tab to be forwarded to terminal")
 	}
@@ -125,8 +137,12 @@ func TestMainMenuEnterActivatesSelection(t *testing.T) {
 	v.SetController(ctrl)
 	v.SetScreen(ScreenMainMenu)
 
-	v.captureInput(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	press(v, tea.KeyEnter, 0, "")
 
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for ctrl.continueCalls == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if ctrl.continueCalls != 1 {
 		t.Fatalf("expected continue action on Enter, got %d", ctrl.continueCalls)
 	}
@@ -139,8 +155,12 @@ func TestCtrlQQuitsFromAnyScreen(t *testing.T) {
 	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 
-	v.captureInput(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModCtrl))
+	press(v, 'q', tea.ModCtrl, "")
 
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for ctrl.quitCalls == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if ctrl.quitCalls != 1 {
 		t.Fatalf("expected Ctrl+Q to trigger quit")
 	}

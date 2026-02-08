@@ -72,6 +72,8 @@ type PlayingState struct {
 	ModeLabel string
 	PackID    string
 	LevelID   string
+	// ElapsedLabel overrides live timer rendering when set (used by deterministic demos).
+	ElapsedLabel string
 	HudWidth  int
 	Objective []string
 	Checks    []CheckRow

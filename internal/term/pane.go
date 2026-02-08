@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 	"github.com/gdamore/tcell/v2"
@@ -321,8 +322,19 @@ func (p *TerminalPane) Draw(screen tcell.Screen) {
 	p.vt.Lock()
 	defer p.vt.Unlock()
 
+	vtCols, vtRows := p.vt.Size()
+	drawW := min(width, max(0, vtCols))
+	drawH := min(height, max(0, vtRows))
+
+	// Clear the viewport first, then draw only the vt-visible area.
 	for row := 0; row < height; row++ {
 		for col := 0; col < width; col++ {
+			screen.SetContent(x+col, y+row, ' ', nil, tcell.StyleDefault)
+		}
+	}
+
+	for row := 0; row < drawH; row++ {
+		for col := 0; col < drawW; col++ {
 			g := p.vt.Cell(col, row)
 			ch := g.Char
 			if ch == 0 {
@@ -335,7 +347,7 @@ func (p *TerminalPane) Draw(screen tcell.Screen) {
 
 	if p.vt.CursorVisible() {
 		cur := p.vt.Cursor()
-		if cur.X >= 0 && cur.X < width && cur.Y >= 0 && cur.Y < height {
+		if cur.X >= 0 && cur.X < drawW && cur.Y >= 0 && cur.Y < drawH {
 			g := p.vt.Cell(cur.X, cur.Y)
 			ch := g.Char
 			if ch == 0 {
@@ -363,6 +375,87 @@ func (p *TerminalPane) drawScrollbackLocked(screen tcell.Screen, x, y, width, he
 	}
 	indicator := "SCROLLBACK"
 	drawTextLine(screen, x+max(0, width-len(indicator)-1), y, len(indicator), indicator, tcell.StyleDefault.Foreground(tcell.ColorYellow))
+}
+
+// Snapshot returns a text snapshot of the current terminal view with optional
+// cursor metadata. It is intended for renderer-agnostic UI layers.
+func (p *TerminalPane) Snapshot(width, height int) Snapshot {
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+
+	out := Snapshot{
+		Lines:      make([]string, height),
+		CursorX:    -1,
+		CursorY:    -1,
+		CursorShow: false,
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.inScrollback {
+		out.Scrollback = true
+		start := p.scrollbackIndex - height
+		if start < 0 {
+			start = 0
+		}
+		lines := p.scrollback[start:p.scrollbackIndex]
+		for row := 0; row < height; row++ {
+			if row < len(lines) {
+				out.Lines[row] = clipWidth(lines[row], width)
+			} else {
+				out.Lines[row] = strings.Repeat(" ", width)
+			}
+		}
+		return out
+	}
+
+	if p.vt == nil {
+		out.Lines[0] = clipWidth("No terminal session", width)
+		for row := 1; row < height; row++ {
+			out.Lines[row] = strings.Repeat(" ", width)
+		}
+		return out
+	}
+
+	p.vt.Lock()
+	defer p.vt.Unlock()
+
+	vtCols, vtRows := p.vt.Size()
+	drawW := min(width, max(0, vtCols))
+	drawH := min(height, max(0, vtRows))
+
+	for row := 0; row < height; row++ {
+		buf := make([]rune, width)
+		for i := range buf {
+			buf[i] = ' '
+		}
+		if row < drawH {
+			for col := 0; col < drawW; col++ {
+				g := p.vt.Cell(col, row)
+				ch := g.Char
+				if ch == 0 || !utf8.ValidRune(ch) {
+					ch = ' '
+				}
+				buf[col] = ch
+			}
+		}
+		out.Lines[row] = string(buf)
+	}
+
+	if p.vt.CursorVisible() {
+		cur := p.vt.Cursor()
+		if cur.X >= 0 && cur.X < width && cur.Y >= 0 && cur.Y < height {
+			out.CursorX = cur.X
+			out.CursorY = cur.Y
+			out.CursorShow = true
+		}
+	}
+	return out
 }
 
 func (p *TerminalPane) Focus(delegate func(p tview.Primitive)) {
@@ -408,6 +501,23 @@ func (p *TerminalPane) playbackLoop(ctx context.Context, frames []PlaybackFrame,
 	}
 }
 
+func clipWidth(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if s == "" {
+		return strings.Repeat(" ", w)
+	}
+	r := []rune(s)
+	if len(r) > w {
+		r = r[:w]
+	}
+	if len(r) < w {
+		r = append(r, []rune(strings.Repeat(" ", w-len(r)))...)
+	}
+	return string(r)
+}
+
 func drawTextLine(screen tcell.Screen, x, y, width int, text string, style tcell.Style) {
 	if width <= 0 {
 		return
@@ -434,6 +544,13 @@ func vtColorToCell(c vt10x.Color, fg bool) tcell.Color {
 
 func max(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

@@ -17,9 +17,18 @@ type Pane interface {
 	ToggleScrollback()
 	Scroll(delta int)
 	InScrollback() bool
+	Snapshot(width, height int) Snapshot
 }
 
 type PlaybackFrame struct {
 	After time.Duration
 	Data  []byte
+}
+
+type Snapshot struct {
+	Lines      []string
+	CursorX    int
+	CursorY    int
+	CursorShow bool
+	Scrollback bool
 }

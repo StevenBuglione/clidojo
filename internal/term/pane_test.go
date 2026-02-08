@@ -1,10 +1,12 @@
 package term
 
 import (
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/hinshun/vt10x"
 )
 
 func TestDrawWithoutSession(t *testing.T) {
@@ -23,6 +25,26 @@ func TestDrawWithoutSession(t *testing.T) {
 	if !strings.Contains(line, "No terminal session") {
 		t.Fatalf("expected placeholder text, got %q", line)
 	}
+}
+
+func TestDrawClampsToVTSize(t *testing.T) {
+	s := tcell.NewSimulationScreen("UTF-8")
+	if err := s.Init(); err != nil {
+		t.Fatalf("init sim screen: %v", err)
+	}
+	defer s.Fini()
+	s.SetSize(120, 40)
+
+	p := NewTerminalPane(nil)
+	p.SetRect(0, 0, 120, 40)
+	p.vt = vt10x.New(vt10x.WithWriter(io.Discard), vt10x.WithSize(80, 24))
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("draw panicked with oversized pane: %v", r)
+		}
+	}()
+	p.Draw(s)
 }
 
 func readLine(s tcell.SimulationScreen, x, y, w int) string {

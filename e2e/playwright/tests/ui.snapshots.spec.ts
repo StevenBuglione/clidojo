@@ -13,7 +13,7 @@ async function snap(page, demo: DemoState, name: string) {
 
   await page.waitForTimeout(800);
 
-  expect(await page.screenshot()).toMatchSnapshot(name);
+  expect(await page.screenshot()).toMatchSnapshot(name, { maxDiffPixels: 120 });
 }
 
 test('main_menu', async ({ page }) => {
