@@ -42,10 +42,21 @@ make webterm
 make webterm-restart
 ```
 
+4. MCP-accessible tunnel (WSL2-safe workflow)
+
+```bash
+make webterm-mcp
+# prints a public https://*.loca.lt URL
+# keep this running while using Playwright MCP
+```
+
 Environment overrides:
 
 ```bash
 PORT=7682 DEV_HTTP=127.0.0.1:17322 scripts/dev-web.sh
+
+# deterministic local state for screenshots:
+CLIDOJO_DATA_DIR=/tmp/clidojo-e2e-data CLIDOJO_RESET_DATA=1 scripts/dev-web.sh
 
 CLIDOJO_WEBTERM_PORT=7683 CLIDOJO_WEBTERM_SESSION=clidojo-review make webterm-restart
 
@@ -78,23 +89,28 @@ scripts/dev-web.sh
 
 2. In Playwright MCP:
 
-- `browser_navigate` to `http://127.0.0.1:7681/`
+- `browser_navigate` to the public URL from `make webterm-mcp`
 - `browser_snapshot` to get the `Terminal input` textbox ref
 - `browser_type` into the textbox (`submit: true`) for terminal commands
 - `browser_press_key` for global keys (`F1`, `F2`, `F4`, `F5`, `F6`, `F10`)
 - `browser_take_screenshot` after state changes
 
-3. If function keys are not honored by host terminal path:
+3. If the tunnel shows “Tunnel website ahead!”:
 
-- Use app fallback: press `Esc` twice quickly to quit
+- Enter the tunnel password printed by `make webterm-mcp`
+- You can always fetch it with: `curl https://loca.lt/mytunnelpassword`
+
+4. If function keys are not honored by host terminal path:
+
+- Use app fallback: press `F10` to open pause menu, then choose `Main menu` or `Quit`
 - Use deterministic demo endpoint to force states:
   - `GET http://127.0.0.1:17321/__dev/ready`
-  - `POST http://127.0.0.1:17321/__dev/demo` with `{"demo":"menu|playing|results_pass|results_fail|hints_open|journal_open|playable"}`
+  - `POST http://127.0.0.1:17321/__dev/demo` with `{"demo":"main_menu|level_select|playing|pause_menu|results_pass|results_fail|hints_open|journal_open|playable"}`
 
 If MCP cannot reach localhost from your environment:
 
 - This is an environment/network boundary, not an app bug.
-- Expose webterm on a reachable URL (tunnel/reverse proxy), then navigate MCP to that public URL.
+- Use `make webterm-mcp` to expose webterm on a reachable URL, then navigate MCP to that public URL.
 - Continue using the local dev API (`/__dev/ready`, `/__dev/demo`) for deterministic state control.
 
 ## Playwright Test Harness
@@ -112,6 +128,7 @@ Snapshots are stored under:
 
 - Structured logs: `--log <path>` (JSONL).
 - Dev ready endpoint: `GET http://127.0.0.1:17321/__dev/ready`
+- Ready payload fields: `state`, `demo`, `rendered`, `pending`, `render_seq`, `error`
 - Dev scenario endpoint: `POST http://127.0.0.1:17321/__dev/demo` with `{ "demo": "..." }`
 - Dev state cache file: `~/.cache/clidojo/dev_state.json`.
 
@@ -119,8 +136,10 @@ Snapshots are stored under:
 
 Use `--demo=` values:
 
-- `menu`
+- `main_menu`
+- `level_select`
 - `playing`
+- `pause_menu`
 - `results_pass`
 - `results_fail`
 - `hints_open`

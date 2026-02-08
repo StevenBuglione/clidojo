@@ -13,7 +13,7 @@ make build
 
 - `--sandbox=auto` detects Podman first, then Docker.
 - `--sandbox=mock` avoids containers for deterministic UI/demo tests.
-- `--demo=<scenario>` seeds deterministic UI states (`menu`, `playing`, `results_pass`, `results_fail`, `hints_open`, `journal_open`, `playable`).
+- `--demo=<scenario>` seeds deterministic UI states (`main_menu`, `level_select`, `playing`, `pause_menu`, `results_pass`, `results_fail`, `hints_open`, `journal_open`, `playable`).
 
 ## Dev Harness
 
@@ -28,12 +28,15 @@ Stable browser-debug loop (ttyd + tmux):
 make webterm
 # or for a clean rebuild/restart while iterating:
 make webterm-restart
+# for Playwright MCP (public tunnel + password prompt):
+make webterm-mcp
 ```
 
 Environment overrides:
 
 ```bash
 CLIDOJO_WEBTERM_PORT=7682 CLIDOJO_WEBTERM_SESSION=clidojo-review make webterm-restart
+CLIDOJO_DATA_DIR=/tmp/clidojo-e2e-data CLIDOJO_RESET_DATA=1 scripts/dev-web.sh
 ```
 
 Note for Playwright MCP in remote/sandboxed environments: if MCP cannot reach
@@ -41,6 +44,10 @@ Note for Playwright MCP in remote/sandboxed environments: if MCP cannot reach
 then point the browser tool at that public URL.
 
 Playwright screenshot scaffolding lives in `e2e/playwright`.
+
+Dev API endpoints (enabled with `--dev`):
+- `GET /__dev/ready` returns `{ state, demo, rendered, pending, render_seq, error }`
+- `POST /__dev/demo` with `{ "demo": "<scenario>" }` applies deterministic UI scenarios
 
 Run screenshots:
 

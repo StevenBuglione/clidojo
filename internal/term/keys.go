@@ -1,6 +1,10 @@
 package term
 
-import "github.com/gdamore/tcell/v2"
+import (
+	"fmt"
+
+	"github.com/gdamore/tcell/v2"
+)
 
 // EncodeEventToBytes converts key events to terminal byte sequences.
 func EncodeEventToBytes(ev *tcell.EventKey) []byte {
@@ -8,43 +12,61 @@ func EncodeEventToBytes(ev *tcell.EventKey) []byte {
 		return nil
 	}
 
-	if ctrl := ctrlCode(ev.Key()); ctrl != 0 {
-		return []byte{ctrl}
-	}
+	mods := ev.Modifiers()
 
 	switch ev.Key() {
 	case tcell.KeyRune:
-		return []byte(string(ev.Rune()))
+		out := []byte(string(ev.Rune()))
+		if mods&tcell.ModAlt != 0 {
+			return append([]byte{0x1b}, out...)
+		}
+		return out
 	case tcell.KeyEnter:
+		if mods&tcell.ModAlt != 0 {
+			return []byte("\x1b\r")
+		}
 		return []byte("\r")
 	case tcell.KeyTab:
+		if mods&tcell.ModAlt != 0 {
+			return []byte("\x1b\t")
+		}
 		return []byte("\t")
 	case tcell.KeyBacktab:
 		return []byte("\x1b[Z")
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if mods&tcell.ModAlt != 0 {
+			return []byte{0x1b, 0x7f}
+		}
 		return []byte{0x7f}
 	case tcell.KeyEsc:
 		return []byte{0x1b}
 	case tcell.KeyUp:
-		return []byte("\x1b[A")
+		return csiWithModifier("A", mods)
 	case tcell.KeyDown:
-		return []byte("\x1b[B")
+		return csiWithModifier("B", mods)
 	case tcell.KeyRight:
-		return []byte("\x1b[C")
+		return csiWithModifier("C", mods)
 	case tcell.KeyLeft:
-		return []byte("\x1b[D")
+		return csiWithModifier("D", mods)
 	case tcell.KeyHome:
-		return []byte("\x1b[H")
+		return csiWithModifier("H", mods)
 	case tcell.KeyEnd:
-		return []byte("\x1b[F")
+		return csiWithModifier("F", mods)
 	case tcell.KeyPgUp:
-		return []byte("\x1b[5~")
+		return tildeWithModifier(5, mods)
 	case tcell.KeyPgDn:
-		return []byte("\x1b[6~")
+		return tildeWithModifier(6, mods)
 	case tcell.KeyDelete:
-		return []byte("\x1b[3~")
+		return tildeWithModifier(3, mods)
 	case tcell.KeyInsert:
-		return []byte("\x1b[2~")
+		return tildeWithModifier(2, mods)
+	}
+
+	if ctrl := ctrlCode(ev.Key()); ctrl != 0 {
+		if mods&tcell.ModAlt != 0 {
+			return []byte{0x1b, ctrl}
+		}
+		return []byte{ctrl}
 	}
 
 	if f := functionKey(ev.Key()); f != "" {
@@ -52,6 +74,36 @@ func EncodeEventToBytes(ev *tcell.EventKey) []byte {
 	}
 
 	return nil
+}
+
+func csiWithModifier(final string, mods tcell.ModMask) []byte {
+	mod := xtermModifier(mods)
+	if mod == 1 {
+		return []byte("\x1b[" + final)
+	}
+	return []byte(fmt.Sprintf("\x1b[1;%d%s", mod, final))
+}
+
+func tildeWithModifier(n int, mods tcell.ModMask) []byte {
+	mod := xtermModifier(mods)
+	if mod == 1 {
+		return []byte(fmt.Sprintf("\x1b[%d~", n))
+	}
+	return []byte(fmt.Sprintf("\x1b[%d;%d~", n, mod))
+}
+
+func xtermModifier(mods tcell.ModMask) int {
+	mod := 1
+	if mods&tcell.ModShift != 0 {
+		mod += 1
+	}
+	if mods&tcell.ModAlt != 0 {
+		mod += 2
+	}
+	if mods&tcell.ModCtrl != 0 {
+		mod += 4
+	}
+	return mod
 }
 
 func ctrlCode(k tcell.Key) byte {

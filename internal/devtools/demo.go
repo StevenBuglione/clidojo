@@ -33,7 +33,13 @@ func (m *Manager) Resolve(name string) Scenario {
 	pass := true
 	fail := false
 	switch name {
+	case "main_menu":
+		return Scenario{Name: name}
+	case "level_select":
+		return Scenario{Name: name}
 	case "menu":
+		return Scenario{Name: "pause_menu", MenuOpen: true}
+	case "pause_menu":
 		return Scenario{Name: name, MenuOpen: true}
 	case "playing", "playable":
 		return Scenario{Name: name}
@@ -53,6 +59,9 @@ func (m *Manager) Resolve(name string) Scenario {
 func (m *Manager) PlaybackFrames(levelID, scenario string) []term.PlaybackFrame {
 	if scenario == "playable" {
 		scenario = "playing"
+	}
+	if scenario == "pause_menu" {
+		scenario = "menu"
 	}
 	keys := []string{
 		fmt.Sprintf("%s_%s", scenario, levelID),

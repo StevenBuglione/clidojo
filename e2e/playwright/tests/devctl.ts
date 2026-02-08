@@ -1,8 +1,10 @@
 import { request as pwRequest, APIRequestContext } from '@playwright/test';
 
 export type DemoState =
-  | 'menu'
+  | 'main_menu'
+  | 'level_select'
   | 'playing'
+  | 'pause_menu'
   | 'results_pass'
   | 'results_fail'
   | 'hints_open'
@@ -19,6 +21,15 @@ export async function setDemo(api: APIRequestContext, demo: DemoState) {
     data: { demo }
   });
   if (!res.ok()) throw new Error(`Failed to set demo=${demo}: ${res.status()}`);
+  for (let i = 0; i < 40; i++) {
+    const ready = await api.get('/__dev/ready');
+    if (ready.ok()) {
+      const body = await ready.json();
+      if (body?.state === demo && body?.rendered === true && body?.pending !== true) return;
+    }
+    await new Promise(r => setTimeout(r, 250));
+  }
+  throw new Error(`Timed out waiting for demo=${demo}`);
 }
 
 export async function waitReady(api: APIRequestContext) {

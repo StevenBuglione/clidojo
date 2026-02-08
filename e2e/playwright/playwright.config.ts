@@ -23,7 +23,9 @@ export default defineConfig({
     env: {
       ...process.env,
       PORT,
-      DEV_HTTP
+      DEV_HTTP,
+      CLIDOJO_DATA_DIR: '/tmp/clidojo-e2e-data',
+      CLIDOJO_RESET_DATA: '1'
     }
   }
 });

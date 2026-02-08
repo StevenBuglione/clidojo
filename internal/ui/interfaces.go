@@ -3,6 +3,11 @@ package ui
 import "time"
 
 type Controller interface {
+	OnContinue()
+	OnOpenLevelSelect()
+	OnStartLevel(packID, levelID string)
+	OnBackToMainMenu()
+	OnOpenMainMenu()
 	OnCheck()
 	OnReset()
 	OnMenu()
@@ -27,6 +32,10 @@ type View interface {
 	Run() error
 	Stop()
 	SetController(Controller)
+	SetScreen(screen Screen)
+	SetMainMenuState(state MainMenuState)
+	SetCatalog(packs []PackSummary)
+	SetLevelSelection(packID, levelID string)
 	SetPlayingState(PlayingState)
 	SetTooSmall(cols, rows int)
 	SetSetupError(msg, details string)
@@ -43,6 +52,14 @@ type View interface {
 	FlashStatus(msg string)
 }
 
+type Screen int
+
+const (
+	ScreenMainMenu Screen = iota
+	ScreenLevelSelect
+	ScreenPlaying
+)
+
 type LayoutMode int
 
 const (
@@ -52,20 +69,20 @@ const (
 )
 
 type PlayingState struct {
-	ModeLabel  string
-	PackID     string
-	LevelID    string
-	Objective  []string
-	Checks     []CheckRow
-	Hints      []HintRow
-	Engine     string
-	StartedAt  time.Time
-	HintsUsed  int
-	Resets     int
-	Score      int
-	Streak     int
-	Badges     []string
-	HudFocused bool
+	ModeLabel string
+	PackID    string
+	LevelID   string
+	HudWidth  int
+	Objective []string
+	Checks    []CheckRow
+	Hints     []HintRow
+	Engine    string
+	StartedAt time.Time
+	HintsUsed int
+	Resets    int
+	Score     int
+	Streak    int
+	Badges    []string
 }
 
 type HintRow struct {
@@ -108,4 +125,34 @@ type JournalEntry struct {
 	Timestamp string
 	Command   string
 	Tags      []string
+}
+
+type MainMenuState struct {
+	EngineName  string
+	PackCount   int
+	LevelCount  int
+	LastPackID  string
+	LastLevelID string
+	Streak      int
+	LevelRuns   int
+	Passes      int
+	Attempts    int
+	Resets      int
+	Tip         string
+}
+
+type PackSummary struct {
+	PackID string
+	Name   string
+	Levels []LevelSummary
+}
+
+type LevelSummary struct {
+	LevelID          string
+	Title            string
+	Difficulty       int
+	EstimatedMinutes int
+	SummaryMD        string
+	ToolFocus        []string
+	ObjectiveBullets []string
 }

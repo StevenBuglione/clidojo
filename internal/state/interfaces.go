@@ -11,6 +11,7 @@ type Store interface {
 	IncrementReset(ctx context.Context, runID int64) error
 	RecordCheckAttempt(ctx context.Context, runID int64, passed bool) error
 	GetSummary(ctx context.Context) (Summary, error)
+	GetLastRun(ctx context.Context) (*LastRun, error)
 	Close() error
 }
 
@@ -26,4 +27,13 @@ type Summary struct {
 	Attempts  int
 	Passes    int
 	Resets    int
+}
+
+type LastRun struct {
+	PackID     string
+	LevelID    string
+	StartTS    time.Time
+	LastPassed bool
+	Attempts   int
+	Resets     int
 }

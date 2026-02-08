@@ -10,19 +10,29 @@ import (
 )
 
 type mockController struct {
-	resetCalls int
-	quitCalls  int
+	continueCalls int
+	quitCalls     int
+	resetCalls    int
+	inputs        [][]byte
 }
 
-func (m *mockController) OnCheck()                  {}
-func (m *mockController) OnReset()                  { m.resetCalls++ }
-func (m *mockController) OnMenu()                   {}
-func (m *mockController) OnHints()                  {}
-func (m *mockController) OnGoal()                   {}
-func (m *mockController) OnJournal()                {}
-func (m *mockController) OnQuit()                   { m.quitCalls++ }
-func (m *mockController) OnResize(int, int)         {}
-func (m *mockController) OnTerminalInput([]byte)    {}
+func (m *mockController) OnContinue()                 { m.continueCalls++ }
+func (m *mockController) OnOpenLevelSelect()          {}
+func (m *mockController) OnStartLevel(string, string) {}
+func (m *mockController) OnBackToMainMenu()           {}
+func (m *mockController) OnOpenMainMenu()             {}
+func (m *mockController) OnCheck()                    {}
+func (m *mockController) OnReset()                    { m.resetCalls++ }
+func (m *mockController) OnMenu()                     {}
+func (m *mockController) OnHints()                    {}
+func (m *mockController) OnGoal()                     {}
+func (m *mockController) OnJournal()                  {}
+func (m *mockController) OnQuit()                     { m.quitCalls++ }
+func (m *mockController) OnResize(int, int)           {}
+func (m *mockController) OnTerminalInput(data []byte) {
+	cp := append([]byte(nil), data...)
+	m.inputs = append(m.inputs, cp)
+}
 func (m *mockController) OnChangeLevel()            {}
 func (m *mockController) OnOpenSettings()           {}
 func (m *mockController) OnOpenStats()              {}
@@ -38,6 +48,7 @@ func TestF6OpensResetConfirmWithoutImmediateReset(t *testing.T) {
 	v := New(Options{TermPane: pane})
 	ctrl := &mockController{}
 	v.SetController(ctrl)
+	v.SetScreen(ScreenPlaying)
 
 	v.captureInput(tcell.NewEventKey(tcell.KeyF6, 0, tcell.ModNone))
 
@@ -52,6 +63,7 @@ func TestF6OpensResetConfirmWithoutImmediateReset(t *testing.T) {
 func TestOverlayEscClosesTopModal(t *testing.T) {
 	pane := term.NewTerminalPane(nil)
 	v := New(Options{TermPane: pane})
+	v.SetScreen(ScreenPlaying)
 	v.SetResult(ResultState{Visible: true, Passed: false, Summary: "x", PrimaryAction: "Try again"})
 
 	v.captureInput(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
@@ -63,6 +75,7 @@ func TestOverlayEscClosesTopModal(t *testing.T) {
 func TestOverlayAllowsModalKeyHandling(t *testing.T) {
 	pane := term.NewTerminalPane(nil)
 	v := New(Options{TermPane: pane})
+	v.SetScreen(ScreenPlaying)
 	v.SetMenuOpen(true)
 
 	ev := v.captureInput(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
@@ -71,30 +84,31 @@ func TestOverlayAllowsModalKeyHandling(t *testing.T) {
 	}
 }
 
-func TestSingleEscDoesNotQuit(t *testing.T) {
+func TestEscPassesThroughToTerminal(t *testing.T) {
 	pane := term.NewTerminalPane(nil)
 	v := New(Options{TermPane: pane})
 	ctrl := &mockController{}
 	v.SetController(ctrl)
+	v.SetScreen(ScreenPlaying)
 
 	v.captureInput(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
 
-	if ctrl.quitCalls != 0 {
-		t.Fatalf("expected single escape to not quit")
+	if len(ctrl.inputs) != 1 || string(ctrl.inputs[0]) != "\x1b" {
+		t.Fatalf("expected escape to be forwarded to terminal")
 	}
 }
 
-func TestDoubleEscQuits(t *testing.T) {
+func TestTabPassesThroughToTerminal(t *testing.T) {
 	pane := term.NewTerminalPane(nil)
 	v := New(Options{TermPane: pane})
 	ctrl := &mockController{}
 	v.SetController(ctrl)
+	v.SetScreen(ScreenPlaying)
 
-	v.captureInput(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
-	v.captureInput(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+	v.captureInput(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
 
-	if ctrl.quitCalls != 1 {
-		t.Fatalf("expected double escape to quit exactly once, got %d", ctrl.quitCalls)
+	if len(ctrl.inputs) != 1 || string(ctrl.inputs[0]) != "\t" {
+		t.Fatalf("expected tab to be forwarded to terminal")
 	}
 }
 
@@ -102,4 +116,32 @@ func TestViewImplementsInterfaceCompileTime(t *testing.T) {
 	pane := term.NewTerminalPane(nil)
 	var _ View = New(Options{TermPane: pane})
 	_ = context.Background()
+}
+
+func TestMainMenuEnterActivatesSelection(t *testing.T) {
+	pane := term.NewTerminalPane(nil)
+	v := New(Options{TermPane: pane})
+	ctrl := &mockController{}
+	v.SetController(ctrl)
+	v.SetScreen(ScreenMainMenu)
+
+	v.captureInput(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if ctrl.continueCalls != 1 {
+		t.Fatalf("expected continue action on Enter, got %d", ctrl.continueCalls)
+	}
+}
+
+func TestCtrlQQuitsFromAnyScreen(t *testing.T) {
+	pane := term.NewTerminalPane(nil)
+	v := New(Options{TermPane: pane})
+	ctrl := &mockController{}
+	v.SetController(ctrl)
+	v.SetScreen(ScreenPlaying)
+
+	v.captureInput(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModCtrl))
+
+	if ctrl.quitCalls != 1 {
+		t.Fatalf("expected Ctrl+Q to trigger quit")
+	}
 }

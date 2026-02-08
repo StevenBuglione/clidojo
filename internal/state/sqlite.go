@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -97,6 +98,41 @@ func (s *SQLiteStore) GetSummary(ctx context.Context) (Summary, error) {
 		return Summary{}, err
 	}
 	return out, nil
+}
+
+func (s *SQLiteStore) GetLastRun(ctx context.Context) (*LastRun, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT pack_id, level_id, start_ts, last_passed, attempts, resets
+		FROM level_runs
+		ORDER BY id DESC
+		LIMIT 1
+	`)
+	var (
+		packID     string
+		levelID    string
+		startTSRaw string
+		lastPassed int
+		attempts   int
+		resets     int
+	)
+	if err := row.Scan(&packID, &levelID, &startTSRaw, &lastPassed, &attempts, &resets); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	startTS, err := time.Parse(timeLayout, startTSRaw)
+	if err != nil {
+		startTS = time.Time{}
+	}
+	return &LastRun{
+		PackID:     packID,
+		LevelID:    levelID,
+		StartTS:    startTS,
+		LastPassed: lastPassed == 1,
+		Attempts:   attempts,
+		Resets:     resets,
+	}, nil
 }
 
 func (s *SQLiteStore) Close() error {

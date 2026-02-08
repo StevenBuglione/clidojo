@@ -53,6 +53,13 @@ func NewTerminalPane(onDirty func()) *TerminalPane {
 
 func (p *TerminalPane) Primitive() tview.Primitive { return p }
 
+// SetDirty updates the redraw callback used when terminal output changes.
+func (p *TerminalPane) SetDirty(fn func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.dirty = fn
+}
+
 func (p *TerminalPane) Start(ctx context.Context, command []string, cwd string, env []string) error {
 	if len(command) == 0 {
 		return errors.New("terminal command is empty")

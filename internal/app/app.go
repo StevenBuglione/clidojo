@@ -36,15 +36,17 @@ type App struct {
 	sandbox *sandbox.Manager
 	demo    *devtools.Manager
 
-	view *ui.Root
-	term *term.TerminalPane
+	view   *ui.Root
+	term   *term.TerminalPane
+	screen ui.Screen
 
 	sessionID string
 	engine    sandbox.EngineInfo
 
-	packs []levels.Pack
-	pack  levels.Pack
-	level levels.Level
+	packs       []levels.Pack
+	pack        levels.Pack
+	level       levels.Level
+	activeLevel bool
 
 	handle sandbox.Handle
 	runID  int64
@@ -65,10 +67,14 @@ type App struct {
 
 	devMu     sync.Mutex
 	devServer *http.Server
+	demoMu    sync.Mutex
 	devState  struct {
 		State     string
 		Demo      string
 		RenderSeq int
+		Rendered  bool
+		Pending   bool
+		Error     string
 	}
 }
 
@@ -104,8 +110,9 @@ func New(cfg Config) (*App, error) {
 		return nil, fmt.Errorf("no packs/levels available under packs/")
 	}
 
-	termPane := term.NewTerminalPane(func() {})
+	termPane := term.NewTerminalPane(nil)
 	view := ui.New(ui.Options{ASCIIOnly: cfg.ASCIIOnly, Debug: cfg.DebugLayout, TermPane: termPane})
+	termPane.SetDirty(view.RequestDraw)
 
 	a := &App{
 		cfg:         cfg,
@@ -122,8 +129,10 @@ func New(cfg Config) (*App, error) {
 		pack:        packs[0],
 		level:       packs[0].LoadedLevels[0],
 		checkStatus: map[string]string{},
+		screen:      ui.ScreenMainMenu,
 	}
 	view.SetController(a)
+	view.SetCatalog(a.catalog())
 	return a, nil
 }
 
@@ -135,8 +144,9 @@ func (a *App) Run(ctx context.Context) error {
 		a.logger.Error("engine.detect_failed", map[string]any{"error": err.Error()})
 		a.engine = sandbox.EngineInfo{Name: "unavailable"}
 		a.view.SetSetupError("No supported container engine found", err.Error())
+		a.view.SetMainMenuState(a.mainMenuState())
+		a.view.SetScreen(ui.ScreenMainMenu)
 		if a.cfg.SandboxMode != "mock" {
-			a.view.SetPlayingState(ui.PlayingState{ModeLabel: "Setup Wizard", PackID: a.pack.PackID, LevelID: a.level.LevelID, Engine: "missing"})
 			return a.view.Run()
 		}
 	} else {
@@ -145,19 +155,23 @@ func (a *App) Run(ctx context.Context) error {
 		_ = a.sandbox.CleanupOrphans(ctx, a.sessionID)
 	}
 
-	a.logger.Info("level.starting", map[string]any{"pack": a.pack.PackID, "level": a.level.LevelID})
-	if err := a.startLevel(ctx, true); err != nil {
-		a.logger.Error("level.start_failed", map[string]any{"error": err.Error()})
-		return err
-	}
-	a.logger.Info("level.started", map[string]any{"pack": a.pack.PackID, "level": a.level.LevelID})
+	a.view.SetMainMenuState(a.mainMenuState())
+	a.view.SetLevelSelection(a.pack.PackID, a.level.LevelID)
+	a.view.SetScreen(ui.ScreenMainMenu)
+	a.screen = ui.ScreenMainMenu
 
 	if a.cfg.Dev {
 		if err := a.startDevHTTP(); err != nil {
 			return err
 		}
 		if a.cfg.DemoScenario != "" {
-			a.applyDemoScenario(context.Background(), a.cfg.DemoScenario)
+			_, err := a.runDemoScenario(context.Background(), a.cfg.DemoScenario, 30*time.Second)
+			if err != nil {
+				a.logger.Error("dev.demo.initial_failed", map[string]any{"demo": a.cfg.DemoScenario, "error": err.Error()})
+			}
+		} else {
+			a.setDevState("main_menu", "")
+			_ = a.demo.SetState(context.Background(), "", "main_menu", true)
 		}
 	}
 
@@ -170,20 +184,22 @@ func (a *App) Close() {
 	if a.devServer != nil {
 		_ = a.devServer.Shutdown(ctx)
 	}
-	if a.handle != nil {
-		_ = a.handle.Stop(ctx)
-	}
-	_ = a.term.Stop()
+	a.stopLevelRuntime(ctx)
 	_ = a.store.Close()
 	_ = a.logger.Close()
 }
 
-func (a *App) startLevel(ctx context.Context, newRun bool) error {
+func (a *App) stopLevelRuntime(ctx context.Context) {
 	if a.handle != nil {
 		_ = a.handle.Stop(ctx)
 		a.handle = nil
 	}
 	_ = a.term.Stop()
+	a.activeLevel = false
+}
+
+func (a *App) startLevel(ctx context.Context, newRun bool) error {
+	a.stopLevelRuntime(ctx)
 	a.view.SetResult(ui.ResultState{})
 	a.view.SetReferenceText("", false)
 	a.view.SetDiffText("", false)
@@ -269,19 +285,29 @@ func (a *App) startLevel(ctx context.Context, newRun bool) error {
 		if err := a.term.StartPlayback(ctx, a.demo.PlaybackFrames(a.level.LevelID, "playing"), false); err != nil {
 			return err
 		}
+		a.logger.Info("term.playback.started", map[string]any{"level": a.level.LevelID})
 	} else {
 		a.logger.Info("term.mode", map[string]any{"mode": "pty"})
 		if err := a.term.Start(ctx, handle.ShellCommand(), handle.Cwd(), handle.Env()); err != nil {
 			return err
 		}
+		a.logger.Info("term.pty.started", map[string]any{"level": a.level.LevelID})
 	}
 
+	a.logger.Info("level.start.sync_state", map[string]any{"level": a.level.LevelID})
 	a.syncPlayingState(a.level.Scoring.BasePoints, a.badgesFor(false))
+	a.logger.Info("level.start.set_screen", map[string]any{"level": a.level.LevelID})
+	a.screen = ui.ScreenPlaying
+	a.view.SetScreen(ui.ScreenPlaying)
+	a.activeLevel = true
+	a.logger.Info("level.start.flash", map[string]any{"level": a.level.LevelID})
 	a.view.FlashStatus("Level ready")
 	a.setDevState("playing", "playing")
+	a.logger.Info("level.start.persist_state", map[string]any{"level": a.level.LevelID})
 	if err := a.demo.SetState(ctx, "", "playing", true); err != nil {
 		a.logger.Error("dev_state.write_failed", map[string]any{"state": "playing", "error": err.Error()})
 	}
+	a.logger.Info("level.start.done", map[string]any{"level": a.level.LevelID})
 	return nil
 }
 
@@ -297,6 +323,7 @@ func (a *App) syncPlayingState(score int, badges []string) {
 		ModeLabel: a.modeLabel(),
 		PackID:    a.pack.PackID,
 		LevelID:   a.level.LevelID,
+		HudWidth:  a.hudWidth(),
 		Objective: a.level.Objective.Bullets,
 		Checks:    checks,
 		Hints:     a.buildHintRows(),
@@ -369,7 +396,95 @@ func (a *App) modeLabel() string {
 	return "Free Play"
 }
 
+func (a *App) OnContinue() {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if last, err := a.store.GetLastRun(ctx); err == nil && last != nil {
+		if pack, level, findErr := a.loader.FindLevel(a.packs, last.PackID, last.LevelID); findErr == nil {
+			a.pack = pack
+			a.level = level
+		}
+	}
+	if err := a.startLevel(ctx, true); err != nil {
+		a.view.FlashStatus("continue failed: " + err.Error())
+		return
+	}
+}
+
+func (a *App) OnOpenLevelSelect() {
+	a.logger.Info("ui.level_select.begin", map[string]any{"active_level": a.activeLevel})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if a.activeLevel {
+		a.logger.Info("ui.level_select.stop_runtime", map[string]any{})
+		a.stopLevelRuntime(ctx)
+	}
+	a.logger.Info("ui.level_select.clear_overlays", map[string]any{})
+	a.view.SetMenuOpen(false)
+	a.view.SetHintsOpen(false)
+	a.view.SetJournalOpen(false)
+	a.view.SetGoalOpen(false)
+	a.logger.Info("ui.level_select.switch_screen", map[string]any{"pack": a.pack.PackID, "level": a.level.LevelID})
+	a.screen = ui.ScreenLevelSelect
+	a.view.SetLevelSelection(a.pack.PackID, a.level.LevelID)
+	a.view.SetScreen(ui.ScreenLevelSelect)
+	a.logger.Info("ui.level_select.state", map[string]any{})
+	a.setDevState("level_select", "level_select")
+	a.logger.Info("ui.level_select.persist", map[string]any{})
+	_ = a.demo.SetState(context.Background(), "", "level_select", true)
+	a.logger.Info("ui.level_select.done", map[string]any{})
+}
+
+func (a *App) OnStartLevel(packID, levelID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pack, level, err := a.loader.FindLevel(a.packs, packID, levelID)
+	if err != nil {
+		a.view.FlashStatus("level not found: " + err.Error())
+		return
+	}
+	a.pack = pack
+	a.level = level
+	if err := a.startLevel(ctx, true); err != nil {
+		a.view.FlashStatus("start level failed: " + err.Error())
+		return
+	}
+}
+
+func (a *App) OnBackToMainMenu() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if a.activeLevel {
+		a.stopLevelRuntime(ctx)
+	}
+	a.menuOpen = false
+	a.hintsOpen = false
+	a.goalOpen = false
+	a.journalOpen = false
+	a.view.SetMenuOpen(false)
+	a.view.SetHintsOpen(false)
+	a.view.SetGoalOpen(false)
+	a.view.SetJournalOpen(false)
+	a.view.SetResult(ui.ResultState{})
+	a.view.SetReferenceText("", false)
+	a.view.SetDiffText("", false)
+	a.screen = ui.ScreenMainMenu
+	a.view.SetMainMenuState(a.mainMenuState())
+	a.view.SetScreen(ui.ScreenMainMenu)
+	a.setDevState("main_menu", "main_menu")
+	_ = a.demo.SetState(context.Background(), "", "main_menu", true)
+}
+
+func (a *App) OnOpenMainMenu() {
+	a.OnBackToMainMenu()
+}
+
 func (a *App) OnCheck() {
+	if !a.activeLevel || a.handle == nil {
+		a.view.FlashStatus("start a level first")
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -542,6 +657,10 @@ func (a *App) levelChecksForGrading() []grading.CheckSpec {
 }
 
 func (a *App) OnReset() {
+	if !a.activeLevel {
+		a.view.FlashStatus("start a level first")
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	a.resetCount++
@@ -554,17 +673,23 @@ func (a *App) OnReset() {
 }
 
 func (a *App) OnMenu() {
+	if !a.activeLevel {
+		return
+	}
 	a.menuOpen = !a.menuOpen
 	a.view.SetMenuOpen(a.menuOpen)
 	if a.menuOpen {
-		a.setDevState("menu", "menu")
-		if err := a.demo.SetState(context.Background(), "", "menu", true); err != nil {
-			a.logger.Error("dev_state.write_failed", map[string]any{"state": "menu", "error": err.Error()})
+		a.setDevState("pause_menu", "pause_menu")
+		if err := a.demo.SetState(context.Background(), "", "pause_menu", true); err != nil {
+			a.logger.Error("dev_state.write_failed", map[string]any{"state": "pause_menu", "error": err.Error()})
 		}
 	}
 }
 
 func (a *App) OnHints() {
+	if !a.activeLevel {
+		return
+	}
 	a.hintsOpen = !a.hintsOpen
 	a.view.SetHintsOpen(a.hintsOpen)
 	if a.hintsOpen {
@@ -577,6 +702,9 @@ func (a *App) OnHints() {
 }
 
 func (a *App) OnRevealHint() {
+	if !a.activeLevel {
+		return
+	}
 	for idx := a.hintRevealed; idx < len(a.level.Hints); idx++ {
 		if unlocked, reason := a.hintUnlocked(idx); unlocked {
 			a.hintRevealed = idx + 1
@@ -593,11 +721,17 @@ func (a *App) OnRevealHint() {
 }
 
 func (a *App) OnGoal() {
+	if !a.activeLevel {
+		return
+	}
 	a.goalOpen = !a.goalOpen
 	a.view.SetGoalOpen(a.goalOpen)
 }
 
 func (a *App) OnJournal() {
+	if !a.activeLevel {
+		return
+	}
 	a.journalOpen = !a.journalOpen
 	if a.journalOpen {
 		a.view.SetJournalEntries(a.readJournalEntries())
@@ -614,6 +748,9 @@ func (a *App) OnJournalExplainAI() {
 }
 
 func (a *App) OnChangeLevel() {
+	if !a.activeLevel {
+		return
+	}
 	a.advanceLevel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -641,7 +778,7 @@ func (a *App) OnOpenStats() {
 }
 
 func (a *App) OnNextLevel() {
-	if !a.lastResult.Passed {
+	if !a.activeLevel || !a.lastResult.Passed {
 		return
 	}
 	a.advanceLevel()
@@ -659,6 +796,9 @@ func (a *App) OnTryAgain() {
 }
 
 func (a *App) OnShowReferenceSolutions() {
+	if !a.activeLevel {
+		return
+	}
 	if !a.lastResult.Passed && a.level.Difficulty > 2 {
 		a.view.FlashStatus("Reference solutions locked until pass")
 		return
@@ -680,6 +820,9 @@ func (a *App) OnShowReferenceSolutions() {
 }
 
 func (a *App) OnOpenDiff() {
+	if !a.activeLevel {
+		return
+	}
 	if len(a.lastResult.Artifacts) == 0 {
 		a.view.FlashStatus("No diff artifacts available")
 		return
@@ -701,6 +844,9 @@ func (a *App) OnQuit() {
 }
 
 func (a *App) OnResize(cols, rows int) {
+	if !a.activeLevel {
+		return
+	}
 	mode := ui.DetermineLayoutMode(cols, rows)
 	if mode == ui.LayoutTooSmall {
 		a.view.SetTooSmall(cols, rows)
@@ -712,11 +858,7 @@ func (a *App) OnResize(cols, rows int) {
 	}
 	w := cols - 2
 	if mode == ui.LayoutWide {
-		hudWidth := a.pack.Defaults.UI.HUDWidth
-		if hudWidth <= 0 {
-			hudWidth = 42
-		}
-		w = cols - hudWidth
+		w = cols - a.hudWidth() - 2
 	}
 	if w < 10 {
 		w = 10
@@ -724,15 +866,43 @@ func (a *App) OnResize(cols, rows int) {
 	_ = a.term.Resize(w, h)
 }
 
+func (a *App) hudWidth() int {
+	w := a.pack.Defaults.UI.HUDWidth
+	if w <= 0 {
+		return 42
+	}
+	return w
+}
+
 func (a *App) OnTerminalInput(data []byte) {
-	if len(data) == 0 {
+	if len(data) == 0 || !a.activeLevel {
 		return
 	}
 	_ = a.term.SendInput(data)
 }
 
-func (a *App) applyDemoScenario(ctx context.Context, scenario string) {
+func (a *App) applyDemoScenario(ctx context.Context, scenario string) error {
 	s := a.demo.Resolve(scenario)
+	a.logger.Info("dev.demo.apply.begin", map[string]any{"requested": scenario, "resolved": s.Name, "active_level": a.activeLevel})
+	if s.Name == "main_menu" {
+		a.OnBackToMainMenu()
+		a.logger.Info("dev.demo.apply.main_menu", map[string]any{})
+		return nil
+	}
+	if s.Name == "level_select" {
+		a.OnOpenLevelSelect()
+		a.logger.Info("dev.demo.apply.level_select", map[string]any{})
+		return nil
+	}
+
+	if !a.activeLevel {
+		a.logger.Info("dev.demo.apply.start_level", map[string]any{"requested": scenario})
+		if err := a.startLevel(ctx, true); err != nil {
+			a.view.FlashStatus("demo start failed: " + err.Error())
+			return err
+		}
+	}
+
 	a.menuOpen = s.MenuOpen
 	a.hintsOpen = s.HintsOpen
 	a.goalOpen = s.GoalOpen
@@ -741,10 +911,14 @@ func (a *App) applyDemoScenario(ctx context.Context, scenario string) {
 		a.hintRevealed = min(1, len(a.level.Hints))
 	}
 
-	if a.handle != nil && a.handle.IsMock() {
-		_ = a.term.StartPlayback(ctx, a.demo.PlaybackFrames(a.level.LevelID, scenario), false)
+	if a.handle != nil && a.handle.IsMock() && s.Name != "pause_menu" {
+		a.logger.Info("dev.demo.apply.playback", map[string]any{"requested": scenario})
+		if err := a.term.StartPlayback(ctx, a.demo.PlaybackFrames(a.level.LevelID, scenario), false); err != nil {
+			return err
+		}
 	}
 
+	a.view.SetScreen(ui.ScreenPlaying)
 	a.syncPlayingState(currentScore(a), nil)
 	a.view.SetMenuOpen(a.menuOpen)
 	a.view.SetHintsOpen(a.hintsOpen)
@@ -784,13 +958,14 @@ func (a *App) applyDemoScenario(ctx context.Context, scenario string) {
 		})
 	}
 
-	a.setDevState(s.Name, s.Name)
-	if err := a.demo.SetState(ctx, "", s.Name, true); err != nil {
-		a.logger.Error("dev_state.write_failed", map[string]any{"state": s.Name, "error": err.Error()})
-	}
+	a.logger.Info("dev.demo.apply.ready", map[string]any{"requested": scenario, "resolved": s.Name})
+	return nil
 }
 
 func (a *App) readJournalEntries() []ui.JournalEntry {
+	if a.handle == nil {
+		return nil
+	}
 	path := filepath.Join(a.handle.WorkDir(), ".dojo_cmdlog")
 	body, err := os.ReadFile(path)
 	if err != nil {
@@ -850,6 +1025,31 @@ func (a *App) setDevState(state, demo string) {
 	defer a.devMu.Unlock()
 	a.devState.State = state
 	a.devState.Demo = demo
+	a.devState.Rendered = true
+	a.devState.Pending = false
+	a.devState.Error = ""
+	a.devState.RenderSeq++
+}
+
+func (a *App) setDevPending(state, demo string) {
+	a.devMu.Lock()
+	defer a.devMu.Unlock()
+	a.devState.State = state
+	a.devState.Demo = demo
+	a.devState.Rendered = false
+	a.devState.Pending = true
+	a.devState.Error = ""
+	a.devState.RenderSeq++
+}
+
+func (a *App) setDevError(state, demo, errText string) {
+	a.devMu.Lock()
+	defer a.devMu.Unlock()
+	a.devState.State = state
+	a.devState.Demo = demo
+	a.devState.Rendered = false
+	a.devState.Pending = false
+	a.devState.Error = errText
 	a.devState.RenderSeq++
 }
 
@@ -861,7 +1061,35 @@ func (a *App) getDevState() map[string]any {
 		"state":      a.devState.State,
 		"demo":       a.devState.Demo,
 		"render_seq": a.devState.RenderSeq,
+		"rendered":   a.devState.Rendered,
+		"pending":    a.devState.Pending,
+		"error":      a.devState.Error,
 	}
+}
+
+func (a *App) runDemoScenario(ctx context.Context, requested string, timeout time.Duration) (string, error) {
+	resolved := a.demo.Resolve(requested).Name
+	a.logger.Info("dev.demo.dispatch.begin", map[string]any{"requested": requested, "resolved": resolved})
+	a.setDevPending(resolved, requested)
+
+	a.demoMu.Lock()
+	defer a.demoMu.Unlock()
+
+	a.logger.Info("dev.demo.dispatch.apply", map[string]any{"requested": requested, "resolved": resolved})
+	if err := a.applyDemoScenario(ctx, requested); err != nil {
+		a.logger.Error("dev.demo.dispatch.apply_failed", map[string]any{"requested": requested, "resolved": resolved, "error": err.Error()})
+		a.setDevError(resolved, requested, err.Error())
+		_ = a.demo.SetState(ctx, "", resolved, false)
+		return resolved, err
+	}
+	_ = timeout
+	a.view.RequestDraw()
+	a.logger.Info("dev.demo.dispatch.done", map[string]any{"requested": requested, "resolved": resolved})
+	a.setDevState(resolved, resolved)
+	if err := a.demo.SetState(ctx, "", resolved, true); err != nil {
+		a.logger.Error("dev_state.write_failed", map[string]any{"state": resolved, "error": err.Error()})
+	}
+	return resolved, nil
 }
 
 func (a *App) startDevHTTP() error {
@@ -893,19 +1121,79 @@ func (a *App) startDevHTTP() error {
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "demo is required"})
 			return
 		}
-		a.applyDemoScenario(context.Background(), req.Demo)
+		a.logger.Info("dev.demo.request", map[string]any{"demo": req.Demo})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		resolved, err := a.runDemoScenario(ctx, req.Demo, 3*time.Second)
+		if err != nil {
+			a.logger.Error("dev.demo.apply_failed", map[string]any{"demo": req.Demo, "resolved": resolved, "error": err.Error()})
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error(), "state": resolved})
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(a.getDevState())
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "state": resolved, "requested": req.Demo})
 	})
 
 	a.devServer = &http.Server{Addr: a.cfg.DevHTTP, Handler: mux}
-	a.setDevState("playing", a.cfg.DemoScenario)
+	a.setDevState("main_menu", a.cfg.DemoScenario)
 	go func() {
 		if err := a.devServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			a.logger.Error("dev_http.listen_failed", map[string]any{"error": err.Error(), "addr": a.cfg.DevHTTP})
 		}
 	}()
 	return nil
+}
+
+func (a *App) catalog() []ui.PackSummary {
+	out := make([]ui.PackSummary, 0, len(a.packs))
+	for _, p := range a.packs {
+		ps := ui.PackSummary{
+			PackID: p.PackID,
+			Name:   p.Name,
+			Levels: make([]ui.LevelSummary, 0, len(p.LoadedLevels)),
+		}
+		for _, lv := range p.LoadedLevels {
+			ps.Levels = append(ps.Levels, ui.LevelSummary{
+				LevelID:          lv.LevelID,
+				Title:            lv.Title,
+				Difficulty:       lv.Difficulty,
+				EstimatedMinutes: lv.EstimatedMinutes,
+				SummaryMD:        lv.SummaryMD,
+				ToolFocus:        append([]string(nil), lv.ToolFocus...),
+				ObjectiveBullets: append([]string(nil), lv.Objective.Bullets...),
+			})
+		}
+		out = append(out, ps)
+	}
+	return out
+}
+
+func (a *App) mainMenuState() ui.MainMenuState {
+	summary, _ := a.store.GetSummary(context.Background())
+	last, _ := a.store.GetLastRun(context.Background())
+	state := ui.MainMenuState{
+		EngineName: a.engine.Name,
+		PackCount:  len(a.packs),
+		LevelRuns:  summary.LevelRuns,
+		Passes:     summary.Passes,
+		Attempts:   summary.Attempts,
+		Resets:     summary.Resets,
+		Tip:        "Use Alt+b and Alt+f in bash to jump by words.",
+	}
+	for _, p := range a.packs {
+		state.LevelCount += len(p.LoadedLevels)
+	}
+	if last != nil {
+		state.LastPackID = last.PackID
+		state.LastLevelID = last.LevelID
+		if last.LastPassed {
+			state.Streak = 1
+		}
+	}
+	return state
 }
 
 func resultSummary(passed bool) string {
@@ -926,7 +1214,7 @@ func currentScore(a *App) int {
 }
 
 func (a *App) badgesFor(passed bool) []string {
-	if !passed {
+	if !passed || a.handle == nil {
 		return nil
 	}
 	b := []string{}

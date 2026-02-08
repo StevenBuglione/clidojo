@@ -18,4 +18,4 @@ These tests require:
 - The app supports `--dev --sandbox=mock --dev-http=...`
 - Dev server endpoints:
   - GET  /__dev/ready
-  - POST /__dev/demo  { demo: "menu" | ... }
+  - POST /__dev/demo  { demo: "main_menu" | "level_select" | "playing" | "pause_menu" | ... }

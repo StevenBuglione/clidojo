@@ -1,6 +1,10 @@
 package app
 
-import "context"
+import (
+	"context"
+
+	"clidojo/internal/state"
+)
 
 type Sandbox interface {
 	Detect(ctx context.Context, forceEngine string) (EngineInfo, error)
@@ -23,5 +27,7 @@ type Store interface {
 	StartLevelRun(ctx context.Context, run LevelRun) (int64, error)
 	IncrementReset(ctx context.Context, runID int64) error
 	RecordCheckAttempt(ctx context.Context, runID int64, passed bool) error
+	GetSummary(ctx context.Context) (state.Summary, error)
+	GetLastRun(ctx context.Context) (*state.LastRun, error)
 	Close() error
 }
