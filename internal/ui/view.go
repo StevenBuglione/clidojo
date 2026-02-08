@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/harmonica"
 	clog "github.com/charmbracelet/log"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type applyMsg struct {
@@ -108,6 +109,10 @@ type Root struct {
 	spring     harmonica.Spring
 
 	drawPending atomic.Bool
+
+	termCursorX    int
+	termCursorY    int
+	termCursorShow bool
 }
 
 type Options struct {
@@ -134,18 +139,18 @@ func New(opts Options) *Root {
 	h.Styles = help.DefaultDarkStyles()
 
 	r := &Root{
-		theme:   DefaultTheme(),
-		ascii:   opts.ASCIIOnly,
-		debug:   opts.Debug,
-		term:    opts.TermPane,
-		screen:  ScreenMainMenu,
-		layout:  LayoutWide,
-		cols:    120,
-		rows:    30,
-		help:    h,
+		theme:    DefaultTheme(),
+		ascii:    opts.ASCIIOnly,
+		debug:    opts.Debug,
+		term:     opts.TermPane,
+		screen:   ScreenMainMenu,
+		layout:   LayoutWide,
+		cols:     120,
+		rows:     30,
+		help:     h,
 		markdown: renderer,
-		logger:  logger,
-		spring:  harmonica.NewSpring(harmonica.FPS(60), 10.0, 0.8),
+		logger:   logger,
+		spring:   harmonica.NewSpring(harmonica.FPS(60), 10.0, 0.8),
 		state: PlayingState{
 			ModeLabel: "Free Play",
 			StartedAt: time.Now(),
@@ -193,7 +198,7 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return r, clockTickCmd()
 	case animateMsg:
 		target := 0.0
-		if r.overlayActive() {
+		if r.goalOpen {
 			target = 1.0
 		}
 		r.overlayPos, r.overlayVel = r.spring.Update(r.overlayPos, r.overlayVel, target)
@@ -208,6 +213,8 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			r.overlayVel = 0
 		}
 		return r, nil
+	case tea.PasteMsg:
+		return r.handlePaste(msg)
 	case tea.KeyPressMsg:
 		return r.handleKey(msg)
 	}
@@ -221,6 +228,7 @@ func (r *Root) View() tea.View {
 	if r.rows < 1 {
 		r.rows = 30
 	}
+	r.termCursorShow = false
 
 	var base string
 	switch r.screen {
@@ -482,6 +490,21 @@ func (r *Root) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	default:
 		return r.handlePlayingKey(msg)
 	}
+}
+
+func (r *Root) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	if r.screen != ScreenPlaying || r.overlayActive() {
+		return r, nil
+	}
+	if r.term != nil && r.term.InScrollback() {
+		r.term.ToggleScrollback()
+	}
+	if msg.Content == "" {
+		return r, nil
+	}
+	content := []byte(msg.Content)
+	r.dispatchController(func(c Controller) { c.OnTerminalInput(content) })
+	return r, nil
 }
 
 func (r *Root) handleOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -763,6 +786,7 @@ func (r *Root) renderPlaying() string {
 	header := r.headerText()
 	status := r.statusText()
 	bodyH := max(3, h-2)
+	bodyY := 1
 
 	var body string
 	if mode == LayoutWide {
@@ -773,24 +797,23 @@ func (r *Root) renderPlaying() string {
 		hudW = min(max(30, hudW), max(30, w-20))
 		termW := max(20, w-hudW)
 		hudPanel := r.drawPanel("HUD", strings.Split(strings.TrimSuffix(r.hudText(), "\n"), "\n"), hudW, bodyH)
-		termPanel := r.renderTerminalPanel(termW, bodyH)
+		termPanel := r.renderTerminalPanel(termW, bodyH, hudW, bodyY)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, hudPanel, termPanel)
 	} else {
-		if r.goalOpen {
-			hudW := min(max(30, r.state.HudWidth), max(30, w-20))
-			termW := max(20, w-hudW)
-			hudPanel := r.drawPanel("HUD", strings.Split(strings.TrimSuffix(r.hudText(), "\n"), "\n"), hudW, bodyH)
-			termPanel := r.renderTerminalPanel(termW, bodyH)
-			body = lipgloss.JoinHorizontal(lipgloss.Top, hudPanel, termPanel)
-		} else {
-			body = r.renderTerminalPanel(w, bodyH)
-		}
+		body = r.renderTerminalPanel(w, bodyH, 0, bodyY)
 	}
 
-	return header + "\n" + body + "\n" + status
+	base := header + "\n" + body + "\n" + status
+	if mode == LayoutMedium {
+		drawer := r.renderGoalDrawer(bodyH)
+		if drawer != "" {
+			base = composeOverlayAt(base, drawer, w, h, bodyY, 0)
+		}
+	}
+	return base
 }
 
-func (r *Root) renderTerminalPanel(width, height int) string {
+func (r *Root) renderTerminalPanel(width, height, originX, originY int) string {
 	innerW := max(1, width-2)
 	innerH := max(1, height-2)
 	lines := make([]string, innerH)
@@ -808,6 +831,26 @@ func (r *Root) renderTerminalPanel(width, height int) string {
 			}
 			lines[0] = string(base)
 		}
+		if snap.CursorShow && !snap.Scrollback {
+			if snap.CursorY >= 0 && snap.CursorY < len(lines) {
+				row := []rune(lines[snap.CursorY])
+				if snap.CursorX >= 0 && snap.CursorX < len(row) {
+					cursorRune := '▌'
+					if r.ascii {
+						cursorRune = '|'
+					}
+					row[snap.CursorX] = cursorRune
+					lines[snap.CursorY] = string(row)
+					x := originX + 1 + snap.CursorX
+					y := originY + 1 + snap.CursorY
+					if x >= 0 && x < r.cols && y >= 0 && y < r.rows {
+						r.termCursorX = x
+						r.termCursorY = y
+						r.termCursorShow = true
+					}
+				}
+			}
+		}
 	} else {
 		lines[0] = "No terminal session"
 	}
@@ -819,6 +862,28 @@ func (r *Root) renderTerminalPanel(width, height int) string {
 		}
 	}
 	return r.drawPanel("Terminal", lines, width, height)
+}
+
+func (r *Root) renderGoalDrawer(bodyHeight int) string {
+	progress := r.overlayPos
+	if r.goalOpen && progress < 0.2 {
+		progress = 0.2
+	}
+	if !r.goalOpen && progress < 0.05 {
+		return ""
+	}
+	hudW := r.state.HudWidth
+	if hudW <= 0 {
+		hudW = 38
+	}
+	hudW = min(max(32, hudW), max(32, r.cols-18))
+	drawW := int(float64(hudW) * maxFloat(progress, 0))
+	if drawW < 18 {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSuffix(r.hudText(), "\n"), "\n")
+	lines = append(lines, "", "Esc closes drawer")
+	return r.drawPanel("HUD Drawer", lines, drawW, bodyHeight)
 }
 
 func (r *Root) renderOverlay() string {
@@ -906,8 +971,10 @@ func (r *Root) headerText() string {
 		elapsed = d.String()
 	}
 	txt := fmt.Sprintf("CLI Dojo | %s | %s/%s | %s | Engine: %s", firstNonEmptyStr(r.state.ModeLabel, "Free Play"), r.state.PackID, r.state.LevelID, elapsed, firstNonEmptyStr(r.state.Engine, "unknown"))
+	txt = trimForWidth(txt, max(1, r.cols-1))
 	if r.debug {
 		txt = fmt.Sprintf("%s | %dx%d %v", txt, r.cols, r.rows, r.layout)
+		txt = trimForWidth(txt, max(1, r.cols-1))
 	}
 	return r.theme.Header.Width(max(1, r.cols)).Render(txt)
 }
@@ -920,6 +987,7 @@ func (r *Root) statusText() string {
 	if r.statusFlash != "" {
 		keys += " | " + r.statusFlash
 	}
+	keys = trimForWidth(keys, max(1, r.cols-1))
 	return r.theme.Status.Width(max(1, r.cols)).Render(keys)
 }
 
@@ -1405,22 +1473,22 @@ func (r *Root) drawPanel(title string, lines []string, width, height int) string
 	}
 
 	out := make([]string, 0, height)
-	out = append(out, top)
+	out = append(out, r.theme.PanelBorder.Render(top))
 	for row := 0; row < innerH; row++ {
 		line := ""
 		if row < len(lines) {
 			line = lines[row]
 		}
 		line = padRune(line, innerW)
-		out = append(out, v+line+v)
+		out = append(out, r.theme.PanelBorder.Render(v)+r.theme.PanelBody.Render(line)+r.theme.PanelBorder.Render(v))
 	}
-	out = append(out, bl+strings.Repeat(h, innerW)+br)
+	out = append(out, r.theme.PanelBorder.Render(bl+strings.Repeat(h, innerW)+br))
 	return strings.Join(out, "\n")
 }
 
 func (r *Root) animateIfNeeded() tea.Cmd {
 	target := 0.0
-	if r.overlayActive() {
+	if r.goalOpen {
 		target = 1.0
 	}
 	if r.shouldAnimate(target) {
@@ -1503,6 +1571,8 @@ func composeOverlay(base, overlay string, cols, rows int) string {
 	if cols <= 0 || rows <= 0 {
 		return base
 	}
+	base = ansi.Strip(base)
+	overlay = ansi.Strip(overlay)
 	baseLines := strings.Split(base, "\n")
 	if len(baseLines) < rows {
 		pad := make([]string, rows-len(baseLines))
@@ -1546,12 +1616,93 @@ func composeOverlay(base, overlay string, cols, rows int) string {
 		if len(src) > ow {
 			src = src[:ow]
 		}
+		for j := 0; j < ow && startCol+j < len(dst); j++ {
+			dst[startCol+j] = ' '
+		}
 		for j := 0; j < len(src) && startCol+j < len(dst); j++ {
 			dst[startCol+j] = src[j]
 		}
 		baseLines[row] = string(dst)
 	}
 	return strings.Join(baseLines[:rows], "\n")
+}
+
+func composeOverlayAt(base, overlay string, cols, rows, startRow, startCol int) string {
+	if cols <= 0 || rows <= 0 {
+		return base
+	}
+	base = ansi.Strip(base)
+	overlay = ansi.Strip(overlay)
+	baseLines := strings.Split(base, "\n")
+	if len(baseLines) < rows {
+		pad := make([]string, rows-len(baseLines))
+		baseLines = append(baseLines, pad...)
+	}
+	for i := 0; i < rows; i++ {
+		baseLines[i] = padRune(baseLines[i], cols)
+	}
+
+	overlayLines := strings.Split(strings.TrimRight(overlay, "\n"), "\n")
+	if len(overlayLines) == 0 {
+		return strings.Join(baseLines[:rows], "\n")
+	}
+	ow := 1
+	for _, line := range overlayLines {
+		lw := len([]rune(line))
+		if lw > ow {
+			ow = lw
+		}
+	}
+	if ow > cols {
+		ow = cols
+	}
+	if startRow < 0 {
+		startRow = 0
+	}
+	if startCol < 0 {
+		startCol = 0
+	}
+
+	for i, line := range overlayLines {
+		row := startRow + i
+		if row < 0 || row >= rows {
+			continue
+		}
+		dst := []rune(baseLines[row])
+		src := []rune(line)
+		if len(src) > ow {
+			src = src[:ow]
+		}
+		for j := 0; j < ow && startCol+j < len(dst); j++ {
+			dst[startCol+j] = ' '
+		}
+		for j := 0; j < len(src) && startCol+j < len(dst); j++ {
+			dst[startCol+j] = src[j]
+		}
+		baseLines[row] = string(dst)
+	}
+	return strings.Join(baseLines[:rows], "\n")
+}
+
+func trimForWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	r := []rune(strings.ReplaceAll(ansi.Strip(s), "\n", " "))
+	if len(r) <= width {
+		return string(r)
+	}
+	if width == 1 {
+		return "…"
+	}
+	return string(r[:width-1]) + "…"
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 var _ tea.Model = (*Root)(nil)

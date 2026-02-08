@@ -41,8 +41,7 @@ func DefaultTheme() Theme {
 			Foreground(amber).
 			Bold(true),
 		PanelBorder: lipgloss.NewStyle().
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(slate),
+			Foreground(slate),
 		PanelBody: lipgloss.NewStyle().
 			Foreground(powder),
 		Overlay: lipgloss.NewStyle().

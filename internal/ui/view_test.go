@@ -124,6 +124,40 @@ func TestTabPassesThroughToTerminal(t *testing.T) {
 	}
 }
 
+func TestPasteMsgPassesThroughToTerminal(t *testing.T) {
+	pane := term.NewTerminalPane(nil)
+	v := New(Options{TermPane: pane})
+	ctrl := &mockController{}
+	v.SetController(ctrl)
+	v.SetScreen(ScreenPlaying)
+
+	_, _ = v.Update(tea.PasteMsg{Content: "echo hi\npwd\n"})
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for len(ctrl.inputs) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(ctrl.inputs) != 1 || string(ctrl.inputs[0]) != "echo hi\npwd\n" {
+		t.Fatalf("expected pasted content to be forwarded unchanged")
+	}
+}
+
+func TestPasteMsgIgnoredWhenOverlayOpen(t *testing.T) {
+	pane := term.NewTerminalPane(nil)
+	v := New(Options{TermPane: pane})
+	ctrl := &mockController{}
+	v.SetController(ctrl)
+	v.SetScreen(ScreenPlaying)
+	v.SetMenuOpen(true)
+
+	_, _ = v.Update(tea.PasteMsg{Content: "echo should_not_send\n"})
+	time.Sleep(50 * time.Millisecond)
+
+	if len(ctrl.inputs) != 0 {
+		t.Fatalf("expected paste to be ignored while overlay is open")
+	}
+}
+
 func TestViewImplementsInterfaceCompileTime(t *testing.T) {
 	pane := term.NewTerminalPane(nil)
 	var _ View = New(Options{TermPane: pane})
