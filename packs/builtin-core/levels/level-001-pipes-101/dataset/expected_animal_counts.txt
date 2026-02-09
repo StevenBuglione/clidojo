@@ -1,0 +1,5 @@
+3	cat
+3	dog
+2	fox
+1	alpaca
+1	koala

@@ -19,17 +19,19 @@ filesystem:
     mount_point: "/work"
     initial_layout:
       mkdirs: []
-      copy_from_dataset: []
+      copy_from_dataset:
+        - from: "expected_animal_counts.txt"
+          to: ".expected_animal_counts.txt"
 
 objective:
   bullets:
     - "Read /levels/current/animals.txt"
     - "Create /work/animal_counts.txt with counts per animal, sorted by count DESC"
-    - "When counts tie, sort by animal name ASC for deterministic output"
+    - "When counts tie, either order is accepted for equal counts"
     - "Format each line as: COUNT<TAB>ANIMAL (tab-separated)"
   success_hint_md: |
     Nice. A canonical solution is:
-    `sort | uniq -c | sort -k1,1nr -k2,2 | awk '{print $1 "\\t" $2}'`
+    `sort | uniq -c | sort -nr | awk '{print $1 "\\t" $2}'`
 
 hints:
   - hint_id: h1
@@ -39,8 +41,8 @@ hints:
     unlock: { after_seconds: 0 }
   - hint_id: h2
     text_md: |
-      Use a deterministic tie-break:
-      `sort -k1,1nr -k2,2`
+      `sort -nr` sorts by count descending.
+      If ties differ, that's okay.
     unlock: { after_seconds: 45 }
   - hint_id: h3
     text_md: |
@@ -56,17 +58,24 @@ checks:
     path: "/work/animal_counts.txt"
     on_fail_message: "No /work/animal_counts.txt found."
 
-  - id: content_exact
-    type: file_text_exact
-    description: "Output matches expected counts + formatting"
+  - id: output_format_tab
+    type: file_lines_match_regex
+    description: "Each output line is tab-separated: COUNT<TAB>ANIMAL"
     required: true
     path: "/work/animal_counts.txt"
-    expected: |
-      3	cat
-      3	dog
-      2	fox
-      1	alpaca
-      1	koala
+    pattern: "^\\d+\\t[[:alpha:]][[:alnum:]_-]*$"
+    mode: all_lines
+    on_fail_message: "Output lines must be formatted as COUNT<TAB>ANIMAL."
+
+  - id: content_counts_match
+    type: command_output_equals_file
+    description: "Output matches expected counts (tie order ignored)"
+    required: true
+    command: |
+      awk 'NF >= 2 {print $1 "\t" $2}' /work/animal_counts.txt \
+        | sort -k1,1nr -k2,2
+    compare_to_path: "/work/.expected_animal_counts.txt"
+    timeout_seconds: 3
     normalize:
       newlines: any
       trim_trailing_whitespace: true
@@ -116,7 +125,7 @@ reference_solutions:
     script_sh: |
       sort /levels/current/animals.txt \
         | uniq -c \
-        | sort -k1,1nr -k2,2 \
+        | sort -nr \
         | awk '{print $1 "\t" $2}' \
         > /work/animal_counts.txt
-    explanation_md: "Sort groups identical lines, uniq counts them, sort orders by count with name tie-break, awk formats."
+    explanation_md: "Sort groups identical lines, uniq counts them, sort orders by count descending, awk formats."

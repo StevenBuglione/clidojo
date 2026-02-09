@@ -1,0 +1,17 @@
+Starting web terminal at http://127.0.0.1:8877
+tmux session: clidojo-verify-docker-8877
+command: ./bin/clidojo --dev --sandbox=docker --dev-http=127.0.0.1:17327
+[2026/02/08 21:25:52:0521] N: ttyd 1.7.7-40e79c7 (libwebsockets 4.3.3-unknown)
+[2026/02/08 21:25:52:0521] N: tty configuration:
+[2026/02/08 21:25:52:0521] N:   start command: tmux -f tools/webterm/tmux.conf attach -t clidojo-verify-docker-8877
+[2026/02/08 21:25:52:0521] N:   close signal: SIGHUP (1)
+[2026/02/08 21:25:52:0521] N:   terminal type: xterm-256color
+[2026/02/08 21:25:52:0521] N:   max clients: 1
+[2026/02/08 21:25:52:0522] N: lws_create_context: LWS: 4.3.3-unknown, MbedTLS-2.28.5 NET SRV H1 H2 WS ConMon IPV6-off
+[2026/02/08 21:25:52:0576] N: elops_init_pt_uv:  Using foreign event loop...
+[2026/02/08 21:25:52:0576] N: __lws_lc_tag:  ++ [wsi|0|pipe] (1)
+[2026/02/08 21:25:52:0576] N: __lws_lc_tag:  ++ [vh|0|netlink] (1)
+[2026/02/08 21:25:52:0605] N: __lws_lc_tag:  ++ [vh|1|default|127.0.0.1|127.0.0.1|8877] (2)
+[2026/02/08 21:25:52:0715] N: [vh|1|default|127.0.0.1|127.0.0.1|8877]: lws_socket_bind: source ads 127.0.0.1
+[2026/02/08 21:25:52:0716] N: __lws_lc_tag:  ++ [wsi|1|listen|default|127.0.0.1|8877] (2)
+[2026/02/08 21:25:52:0716] N:  Listening on port: 8877

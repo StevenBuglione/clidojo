@@ -43,6 +43,11 @@ func TestEncodeKeyPressToBytes(t *testing.T) {
 		{name: "ctrl left", key: tea.KeyPressMsg{Code: tea.KeyLeft, Mod: tea.ModCtrl}, want: "\x1b[1;5D"},
 		{name: "alt right", key: tea.KeyPressMsg{Code: tea.KeyRight, Mod: tea.ModAlt}, want: "\x1b[1;3C"},
 		{name: "shift up", key: tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModShift}, want: "\x1b[1;2A"},
+		{name: "escape keyesc alias", key: tea.KeyPressMsg{Code: tea.KeyEsc}, want: "\x1b"},
+		{name: "escape fragment from browser", key: tea.KeyPressMsg{Text: "[B"}, want: "\x1b[B"},
+		{name: "escape fragment with modifier from browser", key: tea.KeyPressMsg{Text: "[B", Mod: tea.ModShift}, want: "\x1b[B"},
+		{name: "escape fragment ctrl-left from browser", key: tea.KeyPressMsg{Text: "[1;5D"}, want: "\x1b[1;5D"},
+		{name: "plain text not fragment", key: tea.KeyPressMsg{Text: "abc"}, want: "abc"},
 	}
 
 	for _, tt := range tests {

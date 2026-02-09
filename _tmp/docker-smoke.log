@@ -1,0 +1,2 @@
+{"level":"info","msg":"app.start","sandbox":"docker","session":"0b52de7c-d46e-4d98-8401-05b1a79a7ca8","ts":"2026-02-08T22:54:27.18987736Z"}
+{"engine":"docker","level":"info","msg":"engine.detected","ts":"2026-02-08T22:54:27.613975872Z","version":"Docker version 29.2.0, build 0b9d198"}

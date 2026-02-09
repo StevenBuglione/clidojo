@@ -17,10 +17,12 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/harmonica"
 	clog "github.com/charmbracelet/log"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/cellbuf"
 )
 
 type applyMsg struct {
@@ -30,6 +32,9 @@ type applyMsg struct {
 type drawMsg struct{}
 type clockMsg time.Time
 type animateMsg time.Time
+type escFlushMsg struct {
+	seq uint64
+}
 
 type gameKeyMap struct {
 	Hints      key.Binding
@@ -53,8 +58,10 @@ type Root struct {
 	theme        Theme
 	ascii        bool
 	debug        bool
+	devShortcuts bool
 	term         term.Pane
 	ctrl         Controller
+	ctrlQueue    chan func()
 	styleVariant string
 	motionLevel  string
 	mouseScope   string
@@ -94,6 +101,7 @@ type Root struct {
 	goalOpen      bool
 	journalOpen   bool
 	resetOpen     bool
+	settingsOpen  bool
 	infoOpen      bool
 	referenceOpen bool
 	diffOpen      bool
@@ -102,10 +110,15 @@ type Root struct {
 	packIndex     int
 	levelIndex    int
 	catalogFocus  int
+	levelSearch   string
+	levelDiffBand int
 	menuIndex     int
 	resetIndex    int
 	resultIndex   int
 	journalIndex  int
+	settingsIndex int
+
+	settings SettingsState
 
 	help       help.Model
 	keymap     gameKeyMap
@@ -119,16 +132,24 @@ type Root struct {
 
 	drawPending atomic.Bool
 
-	termCursorX    int
-	termCursorY    int
-	termCursorShow bool
+	perfWindowStart time.Time
+	perfFrameCount  int
+	perfFPS         int
+	perfLastRender  time.Duration
+	perfLastSample  time.Time
+	perfLastBytes   int64
+	perfBytesPerSec int64
 
 	lastInputEvent string
+	pendingEsc     bool
+	pendingEscSeq  uint64
+	escFragment    bool
 }
 
 type Options struct {
 	ASCIIOnly    bool
 	Debug        bool
+	DevMode      bool
 	TermPane     term.Pane
 	StyleVariant string
 	MotionLevel  string
@@ -155,13 +176,7 @@ func New(opts Options) *Root {
 	mouseScope := normalizeMouseScope(opts.MouseScope)
 	styleVariant := normalizeStyleVariant(opts.StyleVariant)
 	theme := ThemeForVariant(styleVariant)
-	spring := harmonica.NewSpring(harmonica.FPS(60), 10.0, 0.8)
-	switch motionLevel {
-	case "reduced":
-		spring = harmonica.NewSpring(harmonica.FPS(30), 9.0, 0.92)
-	case "off":
-		spring = harmonica.NewSpring(harmonica.FPS(60), 1000.0, 1.0)
-	}
+	spring := springForMotion(motionLevel)
 	mastery := progress.New(
 		progress.WithWidth(20),
 		progress.WithColors(lipgloss.Color("#5EC2FF"), lipgloss.Color("#79E6A6"), lipgloss.Color("#F2D16B")),
@@ -179,7 +194,9 @@ func New(opts Options) *Root {
 		theme:        theme,
 		ascii:        opts.ASCIIOnly,
 		debug:        opts.Debug,
+		devShortcuts: opts.DevMode,
 		term:         opts.TermPane,
+		ctrlQueue:    make(chan func(), 128),
 		styleVariant: styleVariant,
 		motionLevel:  motionLevel,
 		mouseScope:   mouseScope,
@@ -198,6 +215,13 @@ func New(opts Options) *Root {
 			StartedAt: time.Now(),
 			HudWidth:  42,
 		},
+		settings: SettingsState{
+			AutoCheckMode:       "off",
+			AutoCheckDebounceMS: 800,
+			StyleVariant:        styleVariant,
+			MotionLevel:         motionLevel,
+			MouseScope:          mouseScope,
+		},
 	}
 	r.keymap = gameKeyMap{
 		Hints:      key.NewBinding(key.WithKeys("f1"), key.WithHelp("F1", "Hints")),
@@ -208,7 +232,16 @@ func New(opts Options) *Root {
 		Scrollback: key.NewBinding(key.WithKeys("f9"), key.WithHelp("F9", "Scrollback")),
 		Menu:       key.NewBinding(key.WithKeys("f10"), key.WithHelp("F10", "Menu")),
 	}
+	go r.controllerLoop()
 	return r
+}
+
+func (r *Root) controllerLoop() {
+	for task := range r.ctrlQueue {
+		if task != nil {
+			task()
+		}
+	}
 }
 
 func (r *Root) Init() tea.Cmd {
@@ -245,6 +278,7 @@ func (r *Root) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		r.drawPending.Store(false)
 		return r, nil
 	case clockMsg:
+		r.samplePerfMetrics()
 		return r, clockTickCmd()
 	case animateMsg:
 		target := 0.0
@@ -276,12 +310,32 @@ func (r *Root) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case tea.MouseWheelMsg:
 		return r.handleMouseWheel(msg)
 	case tea.KeyPressMsg:
-		return r.handleKey(msg)
+		normalized, escFragment := normalizeKeyPressMsgWithMeta(msg)
+		r.escFragment = escFragment
+		model, cmd := r.handleKey(normalized)
+		r.escFragment = false
+		return model, cmd
+	case escFlushMsg:
+		if msg.seq != r.pendingEscSeq || !r.pendingEsc {
+			return r, nil
+		}
+		if r.screen != ScreenPlaying || r.overlayActive() {
+			r.pendingEsc = false
+			return r, nil
+		}
+		r.pendingEsc = false
+		r.dispatchController(func(c Controller) { c.OnTerminalInput([]byte{0x1b}) })
+		return r, nil
 	}
 	return r, nil
 }
 
 func (r *Root) View() (view tea.View) {
+	start := time.Now()
+	defer func() {
+		r.recordRenderFrame(time.Since(start))
+	}()
+
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.onModelPanic("view", rec, nil)
@@ -300,7 +354,6 @@ func (r *Root) View() (view tea.View) {
 	if r.rows < 1 {
 		r.rows = 30
 	}
-	r.termCursorShow = false
 
 	var base string
 	switch r.screen {
@@ -313,14 +366,13 @@ func (r *Root) View() (view tea.View) {
 	}
 
 	if overlay := r.renderOverlay(); overlay != "" {
+		base = dimScreen(base, r.cols, r.rows)
 		base = composeOverlay(base, overlay, r.cols, r.rows)
 	}
+	base = normalizeScreen(base, r.rows, r.cols)
 	v := tea.NewView(base)
 	v.AltScreen = true
 	v.MouseMode = r.currentMouseMode()
-	if r.termCursorShow && !r.overlayActive() && r.screen == ScreenPlaying {
-		v.Cursor = tea.NewCursor(r.termCursorX, r.termCursorY)
-	}
 	v.DisableBracketedPasteMode = false
 	return v
 }
@@ -331,7 +383,10 @@ func (r *Root) Run() error {
 		r.mu.Unlock()
 		return nil
 	}
-	p := tea.NewProgram(r)
+	p := tea.NewProgram(
+		r,
+		tea.WithColorProfile(colorprofile.ANSI256),
+	)
 	r.program = p
 	r.running = true
 	r.mu.Unlock()
@@ -507,6 +562,29 @@ func (r *Root) SetInfo(title, text string, open bool) {
 	})
 }
 
+func (r *Root) SetSettings(state SettingsState, open bool) {
+	r.apply(func(m *Root) {
+		state.AutoCheckMode = normalizeAutoCheckMode(state.AutoCheckMode)
+		if state.AutoCheckDebounceMS <= 0 {
+			state.AutoCheckDebounceMS = 800
+		}
+		state.StyleVariant = normalizeStyleVariant(state.StyleVariant)
+		state.MotionLevel = normalizeMotionLevel(state.MotionLevel)
+		state.MouseScope = normalizeMouseScope(state.MouseScope)
+
+		m.settings = state
+		m.settingsOpen = open
+		if !open {
+			m.settingsIndex = 0
+			return
+		}
+		m.infoOpen = false
+		m.referenceOpen = false
+		m.diffOpen = false
+		m.settingsIndex = wrapIndex(m.settingsIndex, len(m.settingsMenuItems()))
+	})
+}
+
 func (r *Root) SetChecking(checking bool) {
 	r.apply(func(m *Root) {
 		m.checking = checking
@@ -564,16 +642,21 @@ func (r *Root) dispatchController(fn func(Controller)) {
 		return
 	}
 	ctrl := r.ctrl
-	go fn(ctrl)
+	task := func() { fn(ctrl) }
+	if r.ctrlQueue == nil {
+		go task()
+		return
+	}
+	select {
+	case r.ctrlQueue <- task:
+	default:
+		// Keep input/render loop responsive even when controller queue is saturated.
+		go task()
+	}
 }
 
 func (r *Root) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	r.recordInputEvent(fmt.Sprintf("key:%v mod:%v text:%q", msg.Code, msg.Mod, msg.Text))
-
-	if key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+q"))) {
-		r.dispatchController(func(c Controller) { c.OnQuit() })
-		return r, nil
-	}
 
 	if r.overlayActive() {
 		return r.handleOverlayKey(msg)
@@ -770,6 +853,22 @@ func (r *Root) handleOverlayMouseClick(x, y int) (tea.Model, tea.Cmd) {
 	case "journal":
 		// Click anywhere in journal overlay to trigger explain action.
 		r.dispatchController(func(c Controller) { c.OnJournalExplainAI() })
+	case "settings":
+		row := contentRow
+		items := r.settingsMenuItems()
+		if row >= 0 && row < len(items) {
+			r.settingsIndex = row
+			action := items[row].Action
+			if action == "apply" {
+				r.settingsOpen = false
+				r.dispatchController(func(c Controller) { c.OnApplySettings(r.settings) })
+			} else if action == "cancel" {
+				r.settingsOpen = false
+				r.settingsIndex = 0
+			} else {
+				r.stepSetting(action, true)
+			}
+		}
 	default:
 		_ = x
 	}
@@ -866,6 +965,39 @@ func (r *Root) handleOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			r.dispatchController(func(c Controller) { c.OnJournalExplainAI() })
 		}
+	case "settings":
+		items := r.settingsMenuItems()
+		if len(items) == 0 {
+			r.settingsOpen = false
+			return r, nil
+		}
+		switch msg.Code {
+		case tea.KeyUp:
+			r.settingsIndex = wrapIndex(r.settingsIndex-1, len(items))
+		case tea.KeyDown, tea.KeyTab:
+			r.settingsIndex = wrapIndex(r.settingsIndex+1, len(items))
+		case tea.KeyLeft:
+			r.stepSetting(items[r.settingsIndex].Action, false)
+		case tea.KeyRight:
+			r.stepSetting(items[r.settingsIndex].Action, true)
+		case tea.KeyEnter:
+			action := items[r.settingsIndex].Action
+			if action == "apply" {
+				r.settingsOpen = false
+				r.dispatchController(func(c Controller) { c.OnApplySettings(r.settings) })
+			} else if action == "cancel" {
+				r.settingsOpen = false
+				r.settingsIndex = 0
+			} else {
+				r.stepSetting(action, true)
+			}
+		}
+	case "info":
+		if strings.EqualFold(strings.TrimSpace(r.infoTitle), "stats") &&
+			(msg.Code == 'r' || msg.Code == 'R') &&
+			msg.Mod&tea.ModCtrl == 0 && msg.Mod&tea.ModAlt == 0 {
+			r.dispatchController(func(c Controller) { c.OnOpenStats() })
+		}
 	}
 	return r, nil
 }
@@ -878,6 +1010,12 @@ func (r *Root) dismissTopOverlay() {
 	case "hints":
 		r.hintsOpen = false
 		r.dispatchController(func(c Controller) { c.OnHints() })
+		// In medium layout, opening hints also opens the HUD drawer.
+		// Esc dismissal should close both to match expected UX.
+		if r.layout == LayoutMedium && r.goalOpen {
+			r.goalOpen = false
+			r.dispatchController(func(c Controller) { c.OnGoal() })
+		}
 	case "journal":
 		r.journalOpen = false
 		r.dispatchController(func(c Controller) { c.OnJournal() })
@@ -911,12 +1049,46 @@ func (r *Root) handleMainMenuKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (r *Root) handleLevelSelectKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.Mod&tea.ModCtrl != 0 {
+		switch msg.Code {
+		case 'u', 'U':
+			r.levelSearch = ""
+			r.syncSelectionFromIndices()
+			return r, nil
+		}
+	}
+	if msg.Mod&tea.ModAlt != 0 {
+		switch msg.Code {
+		case 'f', 'F':
+			r.levelDiffBand = wrapIndex(r.levelDiffBand+1, 4)
+			r.syncSelectionFromIndices()
+			return r, nil
+		}
+	}
 	if msg.Code == tea.KeyEsc {
+		if r.levelSearch != "" {
+			r.levelSearch = ""
+			r.syncSelectionFromIndices()
+			return r, nil
+		}
 		r.dispatchController(func(c Controller) { c.OnBackToMainMenu() })
+		return r, nil
+	}
+	if msg.Code == tea.KeyBackspace {
+		rs := []rune(r.levelSearch)
+		if len(rs) > 0 {
+			r.levelSearch = string(rs[:len(rs)-1])
+			r.syncSelectionFromIndices()
+		}
 		return r, nil
 	}
 	if msg.Code == tea.KeyTab && msg.Mod&tea.ModShift != 0 {
 		r.catalogFocus = 0
+		return r, nil
+	}
+	if msg.Mod == 0 && msg.Text != "" && msg.Code >= 32 && msg.Code != tea.KeyEnter {
+		r.levelSearch += msg.Text
+		r.syncSelectionFromIndices()
 		return r, nil
 	}
 
@@ -954,9 +1126,95 @@ func (r *Root) handleLevelSelectKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (r *Root) handlePlayingKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if r.pendingEsc && msg.Code != tea.KeyEsc && msg.Code != tea.KeyEscape {
+		if r.escFragment {
+			// Browser/websocket paths can split CSI keys into ESC + fragment.
+			// The fragment will be encoded with its own ESC prefix, so drop the
+			// pending standalone ESC to avoid sending duplicate escapes.
+			r.pendingEsc = false
+		} else if msg.Text == "[" || msg.Text == "O" || msg.Code == '[' || msg.Code == 'O' {
+			// Some browser/webterm paths split CSI into ESC + "[" + "B" events.
+			// Forward ESC+prefix now, then allow the trailing byte to follow on
+			// the next event, preserving a valid control sequence.
+			r.pendingEsc = false
+			prefix := "["
+			if msg.Text == "O" || msg.Code == 'O' {
+				prefix = "O"
+			}
+			r.dispatchController(func(c Controller) { c.OnTerminalInput([]byte{0x1b, prefix[0]}) })
+			return r, nil
+		} else {
+			r.pendingEsc = false
+			r.dispatchController(func(c Controller) { c.OnTerminalInput([]byte{0x1b}) })
+		}
+	}
+
 	if (msg.Code == tea.KeyInsert && msg.Mod&tea.ModShift != 0) ||
 		((msg.Code == 'v' || msg.Code == 'V') && msg.Mod&tea.ModCtrl != 0 && msg.Mod&tea.ModShift != 0) {
 		return r, func() tea.Msg { return tea.ReadClipboard() }
+	}
+	if msg.Mod&tea.ModCtrl != 0 {
+		switch msg.Code {
+		case 'v', 'V':
+			return r, func() tea.Msg { return tea.ReadClipboard() }
+		case 'h', 'H':
+			if r.devShortcuts {
+				r.dispatchController(func(c Controller) { c.OnHints() })
+				return r, nil
+			}
+		case 'g', 'G':
+			if r.devShortcuts {
+				r.dispatchController(func(c Controller) { c.OnGoal() })
+				return r, nil
+			}
+		case 'j', 'J':
+			if r.devShortcuts {
+				r.dispatchController(func(c Controller) { c.OnJournal() })
+				return r, nil
+			}
+		case 'r', 'R':
+			if r.devShortcuts {
+				r.resetOpen = true
+				return r, r.animateIfNeeded()
+			}
+		case 'm', 'M':
+			if r.devShortcuts {
+				r.dispatchController(func(c Controller) { c.OnMenu() })
+				return r, nil
+			}
+		case 'y', 'Y':
+			if r.devShortcuts && r.term != nil {
+				r.term.ToggleScrollback()
+				return r, nil
+			}
+		case tea.KeyEnter:
+			r.dispatchController(func(c Controller) { c.OnCheck() })
+			return r, nil
+		}
+	}
+	if msg.Mod&tea.ModAlt != 0 {
+		switch msg.Code {
+		case 'h', 'H':
+			r.dispatchController(func(c Controller) { c.OnHints() })
+			return r, nil
+		case 'g', 'G':
+			r.dispatchController(func(c Controller) { c.OnGoal() })
+			return r, nil
+		case 'j', 'J':
+			r.dispatchController(func(c Controller) { c.OnJournal() })
+			return r, nil
+		case 'r', 'R':
+			r.resetOpen = true
+			return r, r.animateIfNeeded()
+		case 'm', 'M':
+			r.dispatchController(func(c Controller) { c.OnMenu() })
+			return r, nil
+		case 'y', 'Y':
+			if r.term != nil {
+				r.term.ToggleScrollback()
+			}
+			return r, nil
+		}
 	}
 
 	switch msg.Code {
@@ -986,12 +1244,20 @@ func (r *Root) handlePlayingKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		if r.goalOpen {
 			r.dispatchController(func(c Controller) { c.OnGoal() })
-			return r, nil
+			return r, r.animateIfNeeded()
 		}
 		if r.term != nil && r.term.InScrollback() {
 			r.term.ToggleScrollback()
 			return r, nil
 		}
+		if !r.running || r.program == nil {
+			r.dispatchController(func(c Controller) { c.OnTerminalInput([]byte{0x1b}) })
+			return r, nil
+		}
+		r.pendingEsc = true
+		r.pendingEscSeq++
+		seq := r.pendingEscSeq
+		return r, escFlushCmd(seq)
 	}
 
 	if r.term != nil {
@@ -1037,11 +1303,11 @@ func (r *Root) renderMainMenu() string {
 	items := r.mainMenuItems()
 	menuLines := make([]string, len(items))
 	for i, item := range items {
-		prefix := "  "
 		if i == r.mainMenuIndex {
-			prefix = "> "
+			menuLines[i] = r.theme.Accent.Render("> " + item.Label)
+			continue
 		}
-		menuLines[i] = prefix + item.Label
+		menuLines[i] = "  " + item.Label
 	}
 	left := r.drawPanel("Main Menu", menuLines, min(36, max(24, w/3)), max(8, h-2))
 	rightText := r.mainMenuInfoText(items)
@@ -1056,15 +1322,23 @@ func (r *Root) renderMainMenu() string {
 
 func (r *Root) renderLevelSelect() string {
 	w, h := r.cols, r.rows
-	header := r.theme.Header.Width(max(1, w)).Render("CLI Dojo - Level Select")
+	search := strings.TrimSpace(r.levelSearch)
+	filter := r.levelDiffBandLabel()
+	headerTxt := "CLI Dojo - Level Select"
+	if search != "" || filter != "all" {
+		headerTxt = fmt.Sprintf("%s | Search: %q | Filter: %s", headerTxt, search, filter)
+	} else {
+		headerTxt = fmt.Sprintf("%s | / type to search  Alt+F difficulty filter", headerTxt)
+	}
+	header := r.theme.Header.Width(max(1, w)).Render(trimForWidth(headerTxt, max(1, w-1)))
 
 	packs := make([]string, len(r.catalog))
 	for i, p := range r.catalog {
-		prefix := "  "
 		if r.catalogFocus == 0 && i == r.packIndex {
-			prefix = "> "
+			packs[i] = r.theme.Accent.Render(fmt.Sprintf("> %s (%d)", p.Name, len(p.Levels)))
+			continue
 		}
-		packs[i] = fmt.Sprintf("%s%s (%d)", prefix, p.Name, len(p.Levels))
+		packs[i] = fmt.Sprintf("  %s (%d)", p.Name, len(p.Levels))
 	}
 	if len(packs) == 0 {
 		packs = []string{"No packs loaded."}
@@ -1074,14 +1348,14 @@ func (r *Root) renderLevelSelect() string {
 	levels := r.selectedPackLevels()
 	levelLines := make([]string, len(levels))
 	for i, lv := range levels {
-		prefix := "  "
 		if r.catalogFocus == 1 && i == r.levelIndex {
-			prefix = "> "
+			levelLines[i] = r.theme.Accent.Render(fmt.Sprintf("> %s [d:%d ~%dm]", lv.Title, lv.Difficulty, lv.EstimatedMinutes))
+			continue
 		}
-		levelLines[i] = fmt.Sprintf("%s%s [d:%d ~%dm]", prefix, lv.Title, lv.Difficulty, lv.EstimatedMinutes)
+		levelLines[i] = fmt.Sprintf("  %s [d:%d ~%dm]", lv.Title, lv.Difficulty, lv.EstimatedMinutes)
 	}
 	if len(levelLines) == 0 {
-		levelLines = []string{"No levels in this pack."}
+		levelLines = []string{"No levels match current search/filter."}
 	}
 	middleW := min(46, max(28, w/3))
 	middle := r.drawPanel("Levels", levelLines, middleW, max(8, h-2))
@@ -1130,7 +1404,7 @@ func (r *Root) renderPlaying() string {
 		}
 		hudW = min(max(30, hudW), max(30, w-20))
 		termW := max(20, w-hudW)
-		hudPanel := r.drawPanel("HUD", strings.Split(strings.TrimSuffix(r.hudText(), "\n"), "\n"), hudW, bodyH)
+		hudPanel := r.renderHUDColumn(hudW, bodyH)
 		termPanel := r.renderTerminalPanel(termW, bodyH, hudW, bodyY)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, hudPanel, termPanel)
 	} else {
@@ -1147,42 +1421,48 @@ func (r *Root) renderPlaying() string {
 	return base
 }
 
-func (r *Root) renderTerminalPanel(width, height, originX, originY int) string {
+func (r *Root) renderTerminalPanel(width, height int, originX, originY int) string {
+	_ = originX
+	_ = originY
 	innerW := max(1, width-2)
 	innerH := max(1, height-2)
 	lines := make([]string, innerH)
 	if r.term != nil {
-		snap := r.term.Snapshot(innerW, innerH)
-		copy(lines, snap.Lines)
-		if snap.Scrollback && len(lines) > 0 {
-			indicator := "[SCROLLBACK] "
-			base := []rune(lines[0])
-			for i, ch := range []rune(indicator) {
-				if i >= len(base) {
-					break
-				}
-				base[i] = ch
+		if concrete, ok := r.term.(*term.TerminalPane); ok {
+			frame := concrete.SnapshotFrame(innerW, innerH)
+			copy(lines, renderTermFrameRows(frame, innerW, innerH, r.ascii))
+			if frame.Scrollback && len(lines) > 0 {
+				indicatorText := "[SCROLLBACK] "
+				indicatorText = ansi.Truncate(indicatorText, innerW, "")
+				indicatorWidth := ansi.StringWidth(indicatorText)
+				base := lines[0]
+				lines[0] = r.theme.Pending.Render(indicatorText) + ansi.Cut(base, indicatorWidth, innerW)
 			}
-			lines[0] = string(base)
-		}
-		if snap.CursorShow && !snap.Scrollback {
-			if snap.CursorY >= 0 && snap.CursorY < len(lines) {
-				row := []rune(lines[snap.CursorY])
-				if snap.CursorX >= 0 && snap.CursorX < len(row) {
-					cursorRune := '▌'
-					if r.ascii {
-						cursorRune = '|'
-					}
-					row[snap.CursorX] = cursorRune
-					lines[snap.CursorY] = string(row)
-					x := originX + 1 + snap.CursorX
-					y := originY + 1 + snap.CursorY
-					if x >= 0 && x < r.cols && y >= 0 && y < r.rows {
-						r.termCursorX = x
-						r.termCursorY = y
-						r.termCursorShow = true
+		} else {
+			snap := r.term.Snapshot(innerW, innerH)
+			if len(snap.StyledLines) >= innerH {
+				copy(lines, snap.StyledLines[:innerH])
+			} else {
+				copy(lines, snap.Lines)
+			}
+			if snap.Scrollback && len(lines) > 0 {
+				indicatorText := "[SCROLLBACK] "
+				indicatorText = ansi.Truncate(indicatorText, innerW, "")
+				indicatorWidth := ansi.StringWidth(indicatorText)
+				base := lines[0]
+				if base == "" {
+					if len(snap.StyledLines) > 0 {
+						base = snap.StyledLines[0]
+					} else if len(snap.Lines) > 0 {
+						base = snap.Lines[0]
 					}
 				}
+				lines[0] = r.theme.Pending.Render(indicatorText) + ansi.Cut(base, indicatorWidth, innerW)
+			}
+			if snap.CursorShow && !snap.Scrollback &&
+				snap.CursorX >= 0 && snap.CursorX < innerW &&
+				snap.CursorY >= 0 && snap.CursorY < innerH {
+				lines[snap.CursorY] = overlayCursor(lines[snap.CursorY], snap.CursorX, innerW, r.ascii)
 			}
 		}
 	} else {
@@ -1192,10 +1472,131 @@ func (r *Root) renderTerminalPanel(width, height, originX, originY int) string {
 		if lines[i] == "" {
 			lines[i] = strings.Repeat(" ", innerW)
 		} else {
-			lines[i] = padRune(lines[i], innerW)
+			lines[i] = padANSI(lines[i], innerW)
 		}
 	}
-	return r.drawPanel("Terminal", lines, width, height)
+	return r.drawTerminalPanel("Terminal", lines, width, height)
+}
+
+func renderTermFrameRows(frame term.Frame, width, height int, ascii bool) []string {
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+	rows := make([]string, height)
+	var curStyle term.CellStyle
+	styleActive := false
+	for y := 0; y < height; y++ {
+		var b strings.Builder
+		styleActive = false
+		for x := 0; x < width; x++ {
+			cell := frame.Cell(x, y)
+			style := cell.Style
+			if frame.CursorShow && x == frame.CursorX && y == frame.CursorY {
+				if ascii {
+					cell.Ch = '_'
+				} else {
+					style = reverseCellStyle(style)
+					// Reverse-video on a default-style blank cell can still be
+					// visually invisible in some terminals. Force a concrete
+					// fg/bg pair so the cursor remains obvious while typing.
+					if cellStyleIsDefault(style) {
+						style = term.CellStyle{
+							FG:        0,
+							BG:        7,
+							FGDefault: false,
+							BGDefault: false,
+						}
+					}
+				}
+			}
+			if cell.Ch == 0 {
+				cell.Ch = ' '
+			}
+			if cellStyleIsDefault(style) {
+				if styleActive {
+					b.WriteString("\x1b[0m")
+					styleActive = false
+				}
+				b.WriteRune(cell.Ch)
+				continue
+			}
+			if !styleActive || !cellStyleEqual(style, curStyle) {
+				b.WriteString(cellStyleSGR(style))
+				curStyle = style
+				styleActive = true
+			}
+			b.WriteRune(cell.Ch)
+		}
+		if styleActive {
+			b.WriteString("\x1b[0m")
+		}
+		rows[y] = b.String()
+	}
+	return rows
+}
+
+func cellStyleIsDefault(s term.CellStyle) bool {
+	return s.FGDefault && s.BGDefault && !s.Bold && !s.Underline && !s.Dim
+}
+
+func reverseCellStyle(s term.CellStyle) term.CellStyle {
+	s.FG, s.BG = s.BG, s.FG
+	s.FGDefault, s.BGDefault = s.BGDefault, s.FGDefault
+	return s
+}
+
+func cellStyleEqual(a, b term.CellStyle) bool {
+	return a.FG == b.FG &&
+		a.BG == b.BG &&
+		a.FGDefault == b.FGDefault &&
+		a.BGDefault == b.BGDefault &&
+		a.Bold == b.Bold &&
+		a.Underline == b.Underline &&
+		a.Dim == b.Dim
+}
+
+func cellStyleSGR(s term.CellStyle) string {
+	codes := []string{"0"}
+	if s.Bold {
+		codes = append(codes, "1")
+	}
+	if s.Dim {
+		codes = append(codes, "2")
+	}
+	if s.Underline {
+		codes = append(codes, "4")
+	}
+	codes = append(codes, colorIndexToSGR(s.FG, s.FGDefault, true))
+	codes = append(codes, colorIndexToSGR(s.BG, s.BGDefault, false))
+	return "\x1b[" + strings.Join(codes, ";") + "m"
+}
+
+func colorIndexToSGR(index int, isDefault, fg bool) string {
+	if isDefault {
+		if fg {
+			return "39"
+		}
+		return "49"
+	}
+	if index >= 0 && index < 8 {
+		if fg {
+			return fmt.Sprintf("%d", 30+index)
+		}
+		return fmt.Sprintf("%d", 40+index)
+	}
+	if index >= 8 && index < 16 {
+		if fg {
+			return fmt.Sprintf("%d", 90+(index-8))
+		}
+		return fmt.Sprintf("%d", 100+(index-8))
+	}
+	if fg {
+		return fmt.Sprintf("38;5;%d", index)
+	}
+	return fmt.Sprintf("48;5;%d", index)
 }
 
 func (r *Root) renderGoalDrawer(bodyHeight int) string {
@@ -1251,11 +1652,11 @@ func (r *Root) overlaySpec(top string) (overlaySpec, bool) {
 		title = "Menu"
 		items := r.menuItems()
 		for i, item := range items {
-			prefix := "  "
 			if i == r.menuIndex {
-				prefix = "> "
+				lines = append(lines, r.theme.Accent.Render("> "+item.Label))
+				continue
 			}
-			lines = append(lines, prefix+item.Label)
+			lines = append(lines, "  "+item.Label)
 		}
 	case "hints":
 		title = "Hints"
@@ -1272,11 +1673,11 @@ func (r *Root) overlaySpec(top string) (overlaySpec, bool) {
 		if len(buttons) > 0 {
 			lines = append(lines, "", "Actions:")
 			for i, b := range buttons {
-				prefix := "  "
 				if i == r.resultIndex {
-					prefix = "> "
+					lines = append(lines, r.theme.Accent.Render("> "+b))
+					continue
 				}
-				lines = append(lines, prefix+b)
+				lines = append(lines, "  "+b)
 			}
 		}
 		lines = append(lines, "", "Ctrl+C: Copy results")
@@ -1285,12 +1686,15 @@ func (r *Root) overlaySpec(top string) (overlaySpec, bool) {
 		lines = []string{"Reset will destroy current /work state. Continue?", ""}
 		labels := []string{"Cancel", "Reset"}
 		for i, label := range labels {
-			prefix := "  "
 			if i == r.resetIndex {
-				prefix = "> "
+				lines = append(lines, r.theme.Accent.Render("> "+label))
+				continue
 			}
-			lines = append(lines, prefix+label)
+			lines = append(lines, "  "+label)
 		}
+	case "settings":
+		title = "Settings"
+		lines = r.renderSettingsLines()
 	case "reference":
 		title = "Reference Solutions"
 		lines = strings.Split(strings.TrimSuffix(r.referenceText, "\n"), "\n")
@@ -1357,7 +1761,16 @@ func (r *Root) headerText() string {
 	}
 	txt = trimForWidth(txt, width)
 	if r.debug {
-		txt = fmt.Sprintf("%s | %dx%d %v", txt, r.cols, r.rows, r.layout)
+		txt = fmt.Sprintf(
+			"%s | %dx%d %v | %dfps %.1fms %dB/s",
+			txt,
+			r.cols,
+			r.rows,
+			r.layout,
+			r.perfFPS,
+			float64(r.perfLastRender.Microseconds())/1000.0,
+			r.perfBytesPerSec,
+		)
 		txt = trimForWidth(txt, width)
 	}
 	return r.theme.Header.Width(max(1, r.cols)).Render(txt)
@@ -1437,6 +1850,141 @@ func (r *Root) hudText() string {
 		}
 	}
 	return b.String()
+}
+
+func (r *Root) renderHUDColumn(width, height int) string {
+	width = max(4, width)
+	height = max(3, height)
+
+	type cardSpec struct {
+		title   string
+		lines   []string
+		desired int
+	}
+
+	cards := []cardSpec{
+		{title: "Objective", lines: r.objectiveCardLines(), desired: max(5, min(10, len(r.state.Objective)+3))},
+		{title: "Checks", lines: r.checkCardLines(), desired: max(5, min(12, len(r.state.Checks)+3))},
+		{title: "Hints", lines: r.hintCardLines(), desired: max(5, min(10, len(r.state.Hints)+3))},
+		{title: "Score", lines: r.scoreCardLines(), desired: 6},
+		{title: "Mastery", lines: r.masteryCardLines(), desired: 5},
+	}
+	if len(r.state.Badges) > 0 {
+		cards = append(cards, cardSpec{
+			title:   "Badges",
+			lines:   r.badgesCardLines(),
+			desired: max(4, min(8, len(r.state.Badges)+3)),
+		})
+	}
+
+	remaining := height
+	rendered := make([]string, 0, len(cards))
+	for _, card := range cards {
+		if remaining < 3 {
+			break
+		}
+		cardH := min(card.desired, remaining)
+		if cardH < 3 {
+			break
+		}
+		rendered = append(rendered, r.drawPanel(card.title, card.lines, width, cardH))
+		remaining -= cardH
+	}
+	if len(rendered) == 0 {
+		return r.drawPanel("HUD", []string{"No HUD data"}, width, height)
+	}
+	out := strings.Join(rendered, "\n")
+	lines := normalizeScreenLines(out, height, width)
+	return strings.Join(lines, "\n")
+}
+
+func (r *Root) objectiveCardLines() []string {
+	lines := make([]string, 0, len(r.state.Objective)+len(r.state.SessionGoals)+2)
+	for _, obj := range r.state.Objective {
+		lines = append(lines, "• "+obj)
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "No objective loaded.")
+	}
+	if len(r.state.SessionGoals) > 0 {
+		lines = append(lines, "", "Session Goals")
+		for _, goal := range r.state.SessionGoals {
+			lines = append(lines, "◦ "+goal)
+		}
+	}
+	return lines
+}
+
+func (r *Root) checkCardLines() []string {
+	lines := make([]string, 0, len(r.state.Checks))
+	for _, c := range r.state.Checks {
+		icon := r.theme.Pending.Render("•")
+		switch strings.ToLower(strings.TrimSpace(c.Status)) {
+		case "pass":
+			if r.ascii {
+				icon = r.theme.Pass.Render("v")
+			} else {
+				icon = r.theme.Pass.Render("✓")
+			}
+		case "fail":
+			if r.ascii {
+				icon = r.theme.Fail.Render("x")
+			} else {
+				icon = r.theme.Fail.Render("✗")
+			}
+		}
+		lines = append(lines, icon+" "+c.Description)
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "No checks loaded.")
+	}
+	return lines
+}
+
+func (r *Root) hintCardLines() []string {
+	lines := make([]string, 0, len(r.state.Hints))
+	for i, h := range r.state.Hints {
+		status := r.theme.Info.Render("available")
+		text := h.Text
+		if h.Locked && !h.Revealed {
+			status = r.theme.Muted.Render("locked")
+			text = "(hidden)"
+			if h.LockReason != "" {
+				status = r.theme.Muted.Render("locked: " + h.LockReason)
+			}
+		} else if h.Revealed {
+			status = r.theme.Pass.Render("revealed")
+		}
+		lines = append(lines, fmt.Sprintf("%d. %s %s", i+1, status, text))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "No hints configured.")
+	}
+	return lines
+}
+
+func (r *Root) scoreCardLines() []string {
+	return []string{
+		fmt.Sprintf("Current: %d", r.state.Score),
+		fmt.Sprintf("Hints: %d", r.state.HintsUsed),
+		fmt.Sprintf("Resets: %d", r.state.Resets),
+		fmt.Sprintf("Streak: %d", r.state.Streak),
+	}
+}
+
+func (r *Root) masteryCardLines() []string {
+	return []string{
+		r.masteryBar(24),
+		fmt.Sprintf("Progress: %d%%", int(r.masteryPercent()*100)),
+	}
+}
+
+func (r *Root) badgesCardLines() []string {
+	lines := make([]string, 0, len(r.state.Badges))
+	for _, b := range r.state.Badges {
+		lines = append(lines, "★ "+b)
+	}
+	return lines
 }
 
 func (r *Root) hintsText() string {
@@ -1566,13 +2114,96 @@ func (r *Root) mainMenuInfoText(items []menuItem) string {
 	return b.String()
 }
 
+func (r *Root) settingsMenuItems() []menuItem {
+	return []menuItem{
+		{Label: "Auto-check mode", Action: "auto_check_mode"},
+		{Label: "Auto-check debounce", Action: "auto_check_debounce"},
+		{Label: "Style", Action: "style"},
+		{Label: "Motion", Action: "motion"},
+		{Label: "Mouse scope", Action: "mouse"},
+		{Label: "Apply", Action: "apply"},
+		{Label: "Cancel", Action: "cancel"},
+	}
+}
+
+func (r *Root) renderSettingsLines() []string {
+	items := r.settingsMenuItems()
+	lines := make([]string, 0, len(items)+4)
+	for i, item := range items {
+		label := item.Label
+		switch item.Action {
+		case "auto_check_mode":
+			label = fmt.Sprintf("%s: %s", label, normalizeAutoCheckMode(r.settings.AutoCheckMode))
+		case "auto_check_debounce":
+			label = fmt.Sprintf("%s: %dms", label, max(100, r.settings.AutoCheckDebounceMS))
+		case "style":
+			label = fmt.Sprintf("%s: %s", label, normalizeStyleVariant(r.settings.StyleVariant))
+		case "motion":
+			label = fmt.Sprintf("%s: %s", label, normalizeMotionLevel(r.settings.MotionLevel))
+		case "mouse":
+			label = fmt.Sprintf("%s: %s", label, normalizeMouseScope(r.settings.MouseScope))
+		}
+		if i == r.settingsIndex {
+			lines = append(lines, r.theme.Accent.Render("> "+label))
+			continue
+		}
+		lines = append(lines, "  "+label)
+	}
+	lines = append(lines, "", "Left/Right/Enter: change value  Up/Down: move", "Esc: close")
+	return lines
+}
+
+func (r *Root) stepSetting(action string, forward bool) {
+	switch action {
+	case "auto_check_mode":
+		opts := []string{"off", "manual", "command_debounce", "command_and_fs_debounce"}
+		r.settings.AutoCheckMode = cycleString(opts, normalizeAutoCheckMode(r.settings.AutoCheckMode), forward)
+	case "auto_check_debounce":
+		opts := []int{300, 500, 800, 1200, 2000}
+		current := r.settings.AutoCheckDebounceMS
+		if current <= 0 {
+			current = 800
+		}
+		r.settings.AutoCheckDebounceMS = cycleInt(opts, current, forward)
+	case "style":
+		opts := []string{"modern_arcade", "cozy_clean", "retro_terminal"}
+		next := cycleString(opts, normalizeStyleVariant(r.settings.StyleVariant), forward)
+		r.settings.StyleVariant = next
+		r.theme = ThemeForVariant(next)
+		r.styleVariant = next
+	case "motion":
+		opts := []string{"full", "reduced", "off"}
+		next := cycleString(opts, normalizeMotionLevel(r.settings.MotionLevel), forward)
+		r.settings.MotionLevel = next
+		r.motionLevel = next
+		r.spring = springForMotion(next)
+		if next == "off" {
+			r.overlayVel = 0
+			if r.goalOpen {
+				r.overlayPos = 1
+			} else {
+				r.overlayPos = 0
+			}
+		}
+	case "mouse":
+		opts := []string{"scoped", "full", "off"}
+		next := cycleString(opts, normalizeMouseScope(r.settings.MouseScope), forward)
+		r.settings.MouseScope = next
+		r.mouseScope = next
+	}
+}
+
 func (r *Root) levelDetailText() string {
 	pack := r.selectedPackSummary()
-	if pack == nil || len(pack.Levels) == 0 {
+	if pack == nil {
 		return "No levels available in this pack."
 	}
-	idx := wrapIndex(r.levelIndex, len(pack.Levels))
-	lv := pack.Levels[idx]
+	levels := r.filteredLevels(pack.Levels)
+	if len(levels) == 0 {
+		return "No levels match current search/filter.\n\nType to search, Backspace to edit, Ctrl+U to clear.\nUse Alt+F to cycle difficulty filters."
+	}
+	idx := wrapIndex(r.levelIndex, len(levels))
+	lv := levels[idx]
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("%s\n", lv.Title))
 	b.WriteString(fmt.Sprintf("ID: %s\nDifficulty: %d\nEstimated: %d min\n", lv.LevelID, lv.Difficulty, lv.EstimatedMinutes))
@@ -1695,13 +2326,15 @@ func (r *Root) syncCatalogSelection() {
 	}
 	r.packIndex = pidx
 	pack := r.catalog[pidx]
-	if len(pack.Levels) == 0 {
+	levels := r.filteredLevels(pack.Levels)
+	if len(levels) == 0 {
 		r.levelIndex = 0
+		r.selectedLevel = ""
 		return
 	}
 	lidx := 0
 	if r.selectedLevel != "" {
-		for i, lv := range pack.Levels {
+		for i, lv := range levels {
 			if lv.LevelID == r.selectedLevel {
 				lidx = i
 				break
@@ -1710,7 +2343,7 @@ func (r *Root) syncCatalogSelection() {
 	}
 	r.levelIndex = lidx
 	r.selectedPack = pack.PackID
-	r.selectedLevel = pack.Levels[lidx].LevelID
+	r.selectedLevel = levels[lidx].LevelID
 }
 
 func (r *Root) syncSelectionFromIndices() {
@@ -1720,13 +2353,23 @@ func (r *Root) syncSelectionFromIndices() {
 	r.packIndex = wrapIndex(r.packIndex, len(r.catalog))
 	pack := r.catalog[r.packIndex]
 	r.selectedPack = pack.PackID
-	if len(pack.Levels) == 0 {
+	levels := r.filteredLevels(pack.Levels)
+	if len(levels) == 0 {
 		r.levelIndex = 0
 		r.selectedLevel = ""
 		return
 	}
-	r.levelIndex = wrapIndex(r.levelIndex, len(pack.Levels))
-	r.selectedLevel = pack.Levels[r.levelIndex].LevelID
+	if r.selectedLevel != "" {
+		for i, lv := range levels {
+			if lv.LevelID == r.selectedLevel {
+				r.levelIndex = i
+				r.selectedLevel = lv.LevelID
+				return
+			}
+		}
+	}
+	r.levelIndex = wrapIndex(r.levelIndex, len(levels))
+	r.selectedLevel = levels[r.levelIndex].LevelID
 }
 
 func (r *Root) selectedPackSummary() *PackSummary {
@@ -1744,7 +2387,73 @@ func (r *Root) selectedPackLevels() []LevelSummary {
 	if pack == nil {
 		return nil
 	}
-	return pack.Levels
+	return r.filteredLevels(pack.Levels)
+}
+
+func (r *Root) levelDiffBandLabel() string {
+	switch r.levelDiffBand {
+	case 1:
+		return "easy(1-2)"
+	case 2:
+		return "mid(3)"
+	case 3:
+		return "hard(4-5)"
+	default:
+		return "all"
+	}
+}
+
+func (r *Root) filteredLevels(levels []LevelSummary) []LevelSummary {
+	if len(levels) == 0 {
+		return nil
+	}
+	search := strings.ToLower(strings.TrimSpace(r.levelSearch))
+	out := make([]LevelSummary, 0, len(levels))
+	for _, lv := range levels {
+		if !r.matchesDifficultyBand(lv.Difficulty) {
+			continue
+		}
+		if search != "" && !r.levelMatchesSearch(lv, search) {
+			continue
+		}
+		out = append(out, lv)
+	}
+	return out
+}
+
+func (r *Root) matchesDifficultyBand(diff int) bool {
+	switch r.levelDiffBand {
+	case 1:
+		return diff <= 2
+	case 2:
+		return diff == 3
+	case 3:
+		return diff >= 4
+	default:
+		return true
+	}
+}
+
+func (r *Root) levelMatchesSearch(lv LevelSummary, q string) bool {
+	var b strings.Builder
+	b.WriteString(strings.ToLower(lv.LevelID))
+	b.WriteString("\n")
+	b.WriteString(strings.ToLower(lv.Title))
+	b.WriteString("\n")
+	b.WriteString(strings.ToLower(lv.SummaryMD))
+	for _, item := range lv.ToolFocus {
+		b.WriteString("\n")
+		b.WriteString(strings.ToLower(item))
+	}
+	for _, item := range lv.Concepts {
+		b.WriteString("\n")
+		b.WriteString(strings.ToLower(item))
+	}
+	for _, item := range lv.ObjectiveBullets {
+		b.WriteString("\n")
+		b.WriteString(strings.ToLower(item))
+	}
+	return strings.Contains(b.String(), q)
 }
 
 func (r *Root) topOverlay() string {
@@ -1753,6 +2462,8 @@ func (r *Root) topOverlay() string {
 		return "diff"
 	case r.referenceOpen:
 		return "reference"
+	case r.settingsOpen:
+		return "settings"
 	case r.infoOpen:
 		return "info"
 	case r.resetOpen:
@@ -1781,6 +2492,9 @@ func (r *Root) closeTopOverlay() {
 	case "reference":
 		r.referenceOpen = false
 		r.referenceText = ""
+	case "settings":
+		r.settingsOpen = false
+		r.settingsIndex = 0
 	case "info":
 		r.infoOpen = false
 		r.infoText = ""
@@ -1911,32 +2625,68 @@ func (r *Root) drawPanel(title string, lines []string, width, height int) string
 		tl, tr, bl, br = "+", "+", "+", "+"
 	}
 
-	top := tl + strings.Repeat(h, innerW) + tr
-	if title != "" && innerW > 2 {
-		t := " " + title + " "
-		runes := []rune(top)
-		start := 1
-		for i, ch := range []rune(t) {
-			pos := start + i
-			if pos >= len(runes)-1 {
-				break
-			}
-			runes[pos] = ch
-		}
-		top = string(runes)
-	}
-
 	out := make([]string, 0, height)
-	out = append(out, r.theme.PanelBorder.Render(top))
+	if title != "" && innerW > 2 {
+		label := " " + trimForWidth(title, innerW-2) + " "
+		label = ansi.Truncate(label, innerW, "")
+		labelW := ansi.StringWidth(label)
+		fill := strings.Repeat(h, max(0, innerW-labelW))
+		top := r.theme.PanelBorder.Render(tl) + r.theme.PanelTitle.Render(label) + r.theme.PanelBorder.Render(fill+tr)
+		out = append(out, top)
+	} else {
+		top := tl + strings.Repeat(h, innerW) + tr
+		out = append(out, r.theme.PanelBorder.Render(top))
+	}
 	for row := 0; row < innerH; row++ {
 		line := ""
 		if row < len(lines) {
 			line = lines[row]
 		}
-		line = padRune(line, innerW)
+		line = padANSI(strings.ReplaceAll(line, "\t", "    "), innerW)
 		out = append(out, r.theme.PanelBorder.Render(v)+r.theme.PanelBody.Render(line)+r.theme.PanelBorder.Render(v))
 	}
 	out = append(out, r.theme.PanelBorder.Render(bl+strings.Repeat(h, innerW)+br))
+	return strings.Join(out, "\n")
+}
+
+func (r *Root) drawTerminalPanel(title string, lines []string, width, height int) string {
+	width = max(4, width)
+	height = max(3, height)
+	innerW := width - 2
+	innerH := height - 2
+
+	h := "─"
+	v := "│"
+	tl := "┌"
+	tr := "┐"
+	bl := "└"
+	br := "┘"
+	if r.ascii {
+		h = "-"
+		v = "|"
+		tl, tr, bl, br = "+", "+", "+", "+"
+	}
+
+	out := make([]string, 0, height)
+	if title != "" && innerW > 2 {
+		label := " " + trimForWidth(title, innerW-2) + " "
+		label = ansi.Truncate(label, innerW, "")
+		labelW := ansi.StringWidth(label)
+		fill := strings.Repeat(h, max(0, innerW-labelW))
+		top := r.theme.TerminalBorder.Render(tl) + r.theme.PanelTitle.Render(label) + r.theme.TerminalBorder.Render(fill+tr)
+		out = append(out, top)
+	} else {
+		top := tl + strings.Repeat(h, innerW) + tr
+		out = append(out, r.theme.TerminalBorder.Render(top))
+	}
+	for row := 0; row < innerH; row++ {
+		line := strings.Repeat(" ", innerW)
+		if row < len(lines) && lines[row] != "" {
+			line = padANSI(lines[row], innerW)
+		}
+		out = append(out, r.theme.TerminalBorder.Render(v)+line+r.theme.TerminalBorder.Render(v))
+	}
+	out = append(out, r.theme.TerminalBorder.Render(bl+strings.Repeat(h, innerW)+br))
 	return strings.Join(out, "\n")
 }
 
@@ -2021,6 +2771,14 @@ func spinnerTickCmd(model spinner.Model) tea.Cmd {
 	}
 }
 
+func escFlushCmd(seq uint64) tea.Cmd {
+	// Keep this short to preserve normal Esc behavior in terminal apps while
+	// still allowing websocket-fragmented CSI keys to coalesce.
+	return tea.Tick(35*time.Millisecond, func(time.Time) tea.Msg {
+		return escFlushMsg{seq: seq}
+	})
+}
+
 func firstNonEmptyStr(a, b string) string {
 	if strings.TrimSpace(a) != "" {
 		return a
@@ -2076,94 +2834,89 @@ func padRune(s string, width int) string {
 	return string(r)
 }
 
+func padANSI(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	visible := ansi.StringWidth(s)
+	if visible > width {
+		s = ansi.Truncate(s, width, "")
+		visible = ansi.StringWidth(s)
+	}
+	if visible < width {
+		s += strings.Repeat(" ", width-visible)
+	}
+	return s
+}
+
+func overlayCursor(line string, col, width int, ascii bool) string {
+	if width <= 0 || col < 0 || col >= width {
+		return padANSI(line, max(0, width))
+	}
+	line = padANSI(line, width)
+	left := ansi.Cut(line, 0, col)
+	cell := ansi.Cut(line, col, col+1)
+	right := ansi.Cut(line, col+1, width)
+	if cell == "" {
+		cell = " "
+	}
+	if ascii {
+		return left + "_" + right
+	}
+	return left + "\x1b[7m" + cell + "\x1b[0m" + right
+}
+
 func composeOverlay(base, overlay string, cols, rows int) string {
 	if cols <= 0 || rows <= 0 {
 		return base
 	}
-	base = ansi.Strip(base)
-	overlay = ansi.Strip(overlay)
-	baseLines := strings.Split(base, "\n")
-	if len(baseLines) < rows {
-		pad := make([]string, rows-len(baseLines))
-		baseLines = append(baseLines, pad...)
-	}
-	for i := 0; i < rows; i++ {
-		baseLines[i] = padRune(baseLines[i], cols)
-	}
-
 	overlayLines := strings.Split(strings.TrimRight(overlay, "\n"), "\n")
 	if len(overlayLines) == 0 {
-		return strings.Join(baseLines[:rows], "\n")
-	}
-	ow := 1
-	for _, line := range overlayLines {
-		lw := len([]rune(line))
-		if lw > ow {
-			ow = lw
-		}
-	}
-	if ow > cols {
-		ow = cols
-	}
-	oh := len(overlayLines)
-	if oh > rows {
-		oh = rows
-	}
-	startRow := (rows - oh) / 2
-	startCol := (cols - ow) / 2
-	if startCol < 0 {
-		startCol = 0
+		return normalizeScreen(base, rows, cols)
 	}
 
-	for i := 0; i < oh; i++ {
-		row := startRow + i
-		if row < 0 || row >= rows {
-			continue
+	ow := 1
+	for _, line := range overlayLines {
+		if w := ansi.StringWidth(line); w > ow {
+			ow = w
 		}
-		dst := []rune(baseLines[row])
-		src := []rune(overlayLines[i])
-		if len(src) > ow {
-			src = src[:ow]
-		}
-		for j := 0; j < ow && startCol+j < len(dst); j++ {
-			dst[startCol+j] = ' '
-		}
-		for j := 0; j < len(src) && startCol+j < len(dst); j++ {
-			dst[startCol+j] = src[j]
-		}
-		baseLines[row] = string(dst)
 	}
-	return strings.Join(baseLines[:rows], "\n")
+	ow = min(ow, cols)
+	oh := min(len(overlayLines), rows)
+	startRow := max(0, (rows-oh)/2)
+	startCol := max(0, (cols-ow)/2)
+
+	return composeOverlayAt(normalizeScreen(base, rows, cols), strings.Join(overlayLines[:oh], "\n"), cols, rows, startRow, startCol)
+}
+
+func dimScreen(base string, cols, rows int) string {
+	if cols <= 0 || rows <= 0 {
+		return base
+	}
+	buf := cellbuf.NewBuffer(cols, rows)
+	cellbuf.SetContent(buf, normalizeScreen(base, rows, cols))
+	for y := 0; y < rows; y++ {
+		for x := 0; x < cols; x++ {
+			cell := buf.Cell(x, y)
+			if cell == nil {
+				continue
+			}
+			style := cell.Style
+			style.Faint(true)
+			cell.Style = style
+		}
+	}
+	return cellbuf.Render(buf)
 }
 
 func composeOverlayAt(base, overlay string, cols, rows, startRow, startCol int) string {
 	if cols <= 0 || rows <= 0 {
 		return base
 	}
-	base = ansi.Strip(base)
-	overlay = ansi.Strip(overlay)
-	baseLines := strings.Split(base, "\n")
-	if len(baseLines) < rows {
-		pad := make([]string, rows-len(baseLines))
-		baseLines = append(baseLines, pad...)
-	}
-	for i := 0; i < rows; i++ {
-		baseLines[i] = padRune(baseLines[i], cols)
-	}
-
+	base = normalizeScreen(base, rows, cols)
 	overlayLines := strings.Split(strings.TrimRight(overlay, "\n"), "\n")
 	if len(overlayLines) == 0 {
-		return strings.Join(baseLines[:rows], "\n")
-	}
-	ow := 1
-	for _, line := range overlayLines {
-		lw := len([]rune(line))
-		if lw > ow {
-			ow = lw
-		}
-	}
-	if ow > cols {
-		ow = cols
+		return base
 	}
 	if startRow < 0 {
 		startRow = 0
@@ -2171,26 +2924,54 @@ func composeOverlayAt(base, overlay string, cols, rows, startRow, startCol int) 
 	if startCol < 0 {
 		startCol = 0
 	}
-
-	for i, line := range overlayLines {
-		row := startRow + i
-		if row < 0 || row >= rows {
-			continue
-		}
-		dst := []rune(baseLines[row])
-		src := []rune(line)
-		if len(src) > ow {
-			src = src[:ow]
-		}
-		for j := 0; j < ow && startCol+j < len(dst); j++ {
-			dst[startCol+j] = ' '
-		}
-		for j := 0; j < len(src) && startCol+j < len(dst); j++ {
-			dst[startCol+j] = src[j]
-		}
-		baseLines[row] = string(dst)
+	if startRow >= rows || startCol >= cols {
+		return base
 	}
-	return strings.Join(baseLines[:rows], "\n")
+
+	ow := 1
+	for _, line := range overlayLines {
+		if w := ansi.StringWidth(line); w > ow {
+			ow = w
+		}
+	}
+	maxOW := max(1, cols-startCol)
+	ow = min(ow, maxOW)
+
+	maxOH := max(1, rows-startRow)
+	prepared := make([]string, 0, min(len(overlayLines), maxOH))
+	for _, line := range overlayLines {
+		if len(prepared) >= maxOH {
+			break
+		}
+		prepared = append(prepared, line)
+	}
+	if len(prepared) == 0 {
+		return base
+	}
+	buf := cellbuf.NewBuffer(cols, rows)
+	cellbuf.SetContent(buf, base)
+	rect := cellbuf.Rect(startCol, startRow, ow, len(prepared))
+	cellbuf.SetContentRect(buf, strings.Join(prepared, "\n"), rect)
+	return cellbuf.Render(buf)
+}
+
+func normalizeScreen(screen string, rows, cols int) string {
+	lines := normalizeScreenLines(screen, rows, cols)
+	return strings.Join(lines[:rows], "\n")
+}
+
+func normalizeScreenLines(screen string, rows, cols int) []string {
+	lines := strings.Split(screen, "\n")
+	if len(lines) < rows {
+		lines = append(lines, make([]string, rows-len(lines))...)
+	}
+	if len(lines) > rows {
+		lines = lines[:rows]
+	}
+	for i := 0; i < rows; i++ {
+		lines[i] = padANSI(lines[i], cols)
+	}
+	return lines
 }
 
 func trimForWidth(s string, width int) string {
@@ -2246,6 +3027,15 @@ func normalizeMotionLevel(v string) string {
 	}
 }
 
+func normalizeAutoCheckMode(v string) string {
+	switch strings.TrimSpace(v) {
+	case "off", "manual", "command_debounce", "command_and_fs_debounce":
+		return strings.TrimSpace(v)
+	default:
+		return "off"
+	}
+}
+
 func normalizeMouseScope(v string) string {
 	switch strings.TrimSpace(v) {
 	case "off", "scoped", "full":
@@ -2253,6 +3043,239 @@ func normalizeMouseScope(v string) string {
 	default:
 		return "scoped"
 	}
+}
+
+func springForMotion(level string) harmonica.Spring {
+	switch normalizeMotionLevel(level) {
+	case "reduced":
+		return harmonica.NewSpring(harmonica.FPS(30), 9.0, 0.92)
+	case "off":
+		return harmonica.NewSpring(harmonica.FPS(60), 1000.0, 1.0)
+	default:
+		return harmonica.NewSpring(harmonica.FPS(60), 10.0, 0.8)
+	}
+}
+
+func cycleString(options []string, current string, forward bool) string {
+	if len(options) == 0 {
+		return current
+	}
+	idx := 0
+	for i, opt := range options {
+		if opt == current {
+			idx = i
+			break
+		}
+	}
+	if forward {
+		idx = (idx + 1) % len(options)
+	} else {
+		idx = (idx - 1 + len(options)) % len(options)
+	}
+	return options[idx]
+}
+
+func cycleInt(options []int, current int, forward bool) int {
+	if len(options) == 0 {
+		return current
+	}
+	idx := 0
+	for i, opt := range options {
+		if opt == current {
+			idx = i
+			break
+		}
+	}
+	if forward {
+		idx = (idx + 1) % len(options)
+	} else {
+		idx = (idx - 1 + len(options)) % len(options)
+	}
+	return options[idx]
+}
+
+func normalizeKeyPressMsg(msg tea.KeyPressMsg) tea.KeyPressMsg {
+	normalized, _ := normalizeKeyPressMsgWithMeta(msg)
+	return normalized
+}
+
+func normalizeKeyPressMsgWithMeta(msg tea.KeyPressMsg) (tea.KeyPressMsg, bool) {
+	if msg.Text == "" {
+		return msg, false
+	}
+
+	raw := msg.Text
+	if strings.HasPrefix(raw, "\x1b") {
+		fragment := strings.TrimPrefix(raw, "\x1b")
+		if fragment == "" {
+			msg.Code = tea.KeyEsc
+			msg.Text = ""
+			return msg, false
+		}
+		if normalized, ok := parseEscFragmentKey(fragment); ok {
+			return normalized, true
+		}
+		if looksLikeEscFragmentText(fragment) {
+			msg.Text = fragment
+			return msg, true
+		}
+	}
+
+	switch msg.Text {
+	case "\r", "\n":
+		msg.Code = tea.KeyEnter
+		msg.Text = ""
+		return msg, false
+	case "\t":
+		msg.Code = tea.KeyTab
+		msg.Text = ""
+		return msg, false
+	case "\x1b":
+		msg.Code = tea.KeyEsc
+		msg.Text = ""
+		return msg, false
+	case "\x7f", "\b":
+		msg.Code = tea.KeyBackspace
+		msg.Text = ""
+		return msg, false
+	}
+
+	if normalized, ok := parseEscFragmentKey(msg.Text); ok {
+		return normalized, true
+	}
+	if looksLikeEscFragmentText(msg.Text) {
+		return msg, true
+	}
+
+	return msg, false
+}
+
+func looksLikeEscFragmentText(s string) bool {
+	if len(s) < 2 || len(s) > 16 {
+		return false
+	}
+	if strings.ContainsAny(s, " \t\r\n") {
+		return false
+	}
+	if strings.HasPrefix(s, "[") {
+		last := s[len(s)-1]
+		if !((last >= 'A' && last <= 'Z') || last == '~') {
+			return false
+		}
+		for i := 1; i < len(s)-1; i++ {
+			ch := s[i]
+			if (ch >= '0' && ch <= '9') || ch == ';' || ch == '?' {
+				continue
+			}
+			return false
+		}
+		return true
+	}
+	if strings.HasPrefix(s, "O") && len(s) == 2 {
+		switch s[1] {
+		case 'P', 'Q', 'R', 'S', 'A', 'B', 'C', 'D', 'H', 'F', 'Z':
+			return true
+		}
+	}
+	return false
+}
+
+func parseEscFragmentKey(fragment string) (tea.KeyPressMsg, bool) {
+	switch fragment {
+	case "[A", "OA":
+		return tea.KeyPressMsg{Code: tea.KeyUp}, true
+	case "[B", "OB":
+		return tea.KeyPressMsg{Code: tea.KeyDown}, true
+	case "[C", "OC":
+		return tea.KeyPressMsg{Code: tea.KeyRight}, true
+	case "[D", "OD":
+		return tea.KeyPressMsg{Code: tea.KeyLeft}, true
+	case "[H", "OH":
+		return tea.KeyPressMsg{Code: tea.KeyHome}, true
+	case "[F", "OF":
+		return tea.KeyPressMsg{Code: tea.KeyEnd}, true
+	case "[Z":
+		return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}, true
+	case "OP":
+		return tea.KeyPressMsg{Code: tea.KeyF1}, true
+	case "OQ":
+		return tea.KeyPressMsg{Code: tea.KeyF2}, true
+	case "OR":
+		return tea.KeyPressMsg{Code: tea.KeyF3}, true
+	case "OS":
+		return tea.KeyPressMsg{Code: tea.KeyF4}, true
+	case "[2~":
+		return tea.KeyPressMsg{Code: tea.KeyInsert}, true
+	case "[3~":
+		return tea.KeyPressMsg{Code: tea.KeyDelete}, true
+	case "[5~":
+		return tea.KeyPressMsg{Code: tea.KeyPgUp}, true
+	case "[6~":
+		return tea.KeyPressMsg{Code: tea.KeyPgDown}, true
+	case "[15~":
+		return tea.KeyPressMsg{Code: tea.KeyF5}, true
+	case "[17~":
+		return tea.KeyPressMsg{Code: tea.KeyF6}, true
+	case "[18~":
+		return tea.KeyPressMsg{Code: tea.KeyF7}, true
+	case "[19~":
+		return tea.KeyPressMsg{Code: tea.KeyF8}, true
+	case "[20~":
+		return tea.KeyPressMsg{Code: tea.KeyF9}, true
+	case "[21~":
+		return tea.KeyPressMsg{Code: tea.KeyF10}, true
+	case "[23~":
+		return tea.KeyPressMsg{Code: tea.KeyF11}, true
+	case "[24~":
+		return tea.KeyPressMsg{Code: tea.KeyF12}, true
+	default:
+		return tea.KeyPressMsg{}, false
+	}
+}
+
+func (r *Root) recordRenderFrame(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	r.perfLastRender = d
+	now := time.Now()
+	if r.perfWindowStart.IsZero() {
+		r.perfWindowStart = now
+		r.perfFrameCount = 0
+	}
+	r.perfFrameCount++
+	window := now.Sub(r.perfWindowStart)
+	if window >= time.Second {
+		r.perfFPS = int(float64(r.perfFrameCount) / window.Seconds())
+		r.perfWindowStart = now
+		r.perfFrameCount = 0
+	}
+}
+
+func (r *Root) samplePerfMetrics() {
+	provider, ok := r.term.(term.MetricsProvider)
+	if !ok {
+		return
+	}
+	now := time.Now()
+	cur := provider.TotalOutputBytes()
+	if r.perfLastSample.IsZero() {
+		r.perfLastSample = now
+		r.perfLastBytes = cur
+		r.perfBytesPerSec = 0
+		return
+	}
+	dt := now.Sub(r.perfLastSample).Seconds()
+	if dt <= 0 {
+		return
+	}
+	delta := cur - r.perfLastBytes
+	if delta < 0 {
+		delta = 0
+	}
+	r.perfBytesPerSec = int64(float64(delta) / dt)
+	r.perfLastSample = now
+	r.perfLastBytes = cur
 }
 
 func (r *Root) recordInputEvent(event string) {

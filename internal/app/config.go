@@ -39,7 +39,7 @@ func DefaultConfig() Config {
 		SandboxMode: "auto",
 		DevHTTP:     "127.0.0.1:17321",
 		Gameplay: GameplayConfig{
-			AutoCheckDefault:    "command_and_fs_debounce",
+			AutoCheckDefault:    "off",
 			AutoCheckDebounceMS: 800,
 		},
 		UI: UIConfig{
@@ -61,12 +61,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid engine override %q", c.EngineOverride)
 	}
 	switch c.Gameplay.AutoCheckDefault {
-	case "", "off", "command_debounce", "command_and_fs_debounce":
+	case "", "off", "manual", "command_debounce", "command_and_fs_debounce":
 	default:
 		return fmt.Errorf("invalid gameplay auto-check mode %q", c.Gameplay.AutoCheckDefault)
 	}
 	if c.Gameplay.AutoCheckDefault == "" {
-		c.Gameplay.AutoCheckDefault = "command_and_fs_debounce"
+		c.Gameplay.AutoCheckDefault = "off"
 	}
 	if c.Gameplay.AutoCheckDebounceMS <= 0 {
 		c.Gameplay.AutoCheckDebounceMS = 800

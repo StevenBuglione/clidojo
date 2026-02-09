@@ -26,6 +26,7 @@ type Controller interface {
 	OnShowReferenceSolutions()
 	OnOpenDiff()
 	OnJournalExplainAI()
+	OnApplySettings(update SettingsState)
 }
 
 type View interface {
@@ -49,6 +50,7 @@ type View interface {
 	SetReferenceText(text string, open bool)
 	SetDiffText(text string, open bool)
 	SetInfo(title, text string, open bool)
+	SetSettings(state SettingsState, open bool)
 	SetChecking(checking bool)
 	FlashStatus(msg string)
 }
@@ -144,6 +146,14 @@ type MainMenuState struct {
 	Attempts    int
 	Resets      int
 	Tip         string
+}
+
+type SettingsState struct {
+	AutoCheckMode       string
+	AutoCheckDebounceMS int
+	StyleVariant        string
+	MotionLevel         string
+	MouseScope          string
 }
 
 type PackSummary struct {

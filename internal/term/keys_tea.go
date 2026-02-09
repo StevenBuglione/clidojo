@@ -2,6 +2,7 @@ package term
 
 import (
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
@@ -14,11 +15,21 @@ func EncodeKeyPressToBytes(ev tea.KeyPressMsg) []byte {
 
 	// Printable characters.
 	if key.Text != "" {
+		// Bubble Tea can surface terminal escape fragments as text in browser/
+		// websocket paths (e.g. "[B" for arrow-down). Preserve expected terminal
+		// behavior by restoring the ESC prefix even if a modifier bit is set by
+		// the browser transport.
+		if looksLikeEscFragment(key.Text) {
+			return append([]byte{0x1b}, []byte(key.Text)...)
+		}
 		out := []byte(key.Text)
 		if key.Mod&tea.ModAlt != 0 {
 			return append([]byte{0x1b}, out...)
 		}
 		return out
+	}
+	if key.Code == tea.KeyEsc || key.Code == tea.KeyEscape {
+		return []byte{0x1b}
 	}
 
 	switch key.Code {
@@ -40,8 +51,6 @@ func EncodeKeyPressToBytes(ev tea.KeyPressMsg) []byte {
 			return []byte{0x1b, 0x7f}
 		}
 		return []byte{0x7f}
-	case tea.KeyEscape:
-		return []byte{0x1b}
 	case tea.KeyUp:
 		return teaCSIWithModifier("A", key.Mod)
 	case tea.KeyDown:
@@ -77,6 +86,39 @@ func EncodeKeyPressToBytes(ev tea.KeyPressMsg) []byte {
 		return []byte(f)
 	}
 	return nil
+}
+
+func looksLikeEscFragment(s string) bool {
+	if len(s) < 2 || len(s) > 16 {
+		return false
+	}
+	if strings.ContainsAny(s, " \t\r\n") {
+		return false
+	}
+
+	if strings.HasPrefix(s, "[") {
+		last := s[len(s)-1]
+		if !((last >= 'A' && last <= 'Z') || last == '~') {
+			return false
+		}
+		for i := 1; i < len(s)-1; i++ {
+			ch := s[i]
+			if (ch >= '0' && ch <= '9') || ch == ';' || ch == '?' {
+				continue
+			}
+			return false
+		}
+		return true
+	}
+
+	if strings.HasPrefix(s, "O") && len(s) == 2 {
+		switch s[1] {
+		case 'P', 'Q', 'R', 'S', 'A', 'B', 'C', 'D', 'H', 'F', 'Z':
+			return true
+		}
+	}
+
+	return false
 }
 
 func teaCSIWithModifier(final string, mods tea.KeyMod) []byte {

@@ -35,13 +35,14 @@ func ThemeForVariant(variant string) Theme {
 }
 
 func modernArcadeTheme() Theme {
-	amber := lipgloss.Color("#E9B44C")
-	mint := lipgloss.Color("#7BC8A4")
-	brick := lipgloss.Color("#D96C6C")
-	ink := lipgloss.Color("#20242B")
-	slate := lipgloss.Color("#2C323D")
-	powder := lipgloss.Color("#E7EAF0")
-	blue := lipgloss.Color("#77B5D9")
+	amber := lipgloss.Color("#FFC857")
+	mint := lipgloss.Color("#67F0A8")
+	brick := lipgloss.Color("#FF6F91")
+	ink := lipgloss.Color("#0E1420")
+	slate := lipgloss.Color("#1B2740")
+	powder := lipgloss.Color("#EAF2FF")
+	blue := lipgloss.Color("#5EEBFF")
+	border := lipgloss.Color("#4B5F8A")
 
 	return Theme{
 		Header: lipgloss.NewStyle().
@@ -53,20 +54,20 @@ func modernArcadeTheme() Theme {
 			Foreground(powder).
 			Padding(0, 1),
 		PanelTitle: lipgloss.NewStyle().
-			Foreground(amber).
+			Foreground(blue).
 			Bold(true),
 		PanelBorder: lipgloss.NewStyle().
-			Foreground(slate),
+			Foreground(border),
 		PanelBody: lipgloss.NewStyle().
 			Foreground(powder),
 		Overlay: lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(amber).
+			BorderForeground(blue).
 			Background(ink).
 			Foreground(powder).
 			Padding(1, 2),
 		OverlayTitle: lipgloss.NewStyle().
-			Foreground(amber).
+			Foreground(blue).
 			Bold(true),
 		Accent: lipgloss.NewStyle().
 			Foreground(blue).
@@ -80,12 +81,11 @@ func modernArcadeTheme() Theme {
 		Pending: lipgloss.NewStyle().
 			Foreground(amber),
 		Muted: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#98A2B3")),
+			Foreground(lipgloss.Color("#9CAAC6")),
 		Info: lipgloss.NewStyle().
 			Foreground(blue),
 		TerminalBorder: lipgloss.NewStyle().
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("#415062")),
+			Foreground(border),
 	}
 }
 
@@ -118,8 +118,7 @@ func cozyCleanTheme() Theme {
 		Muted:        lipgloss.NewStyle().Foreground(lipgloss.Color("#A3ACC2")),
 		Info:         lipgloss.NewStyle().Foreground(sky),
 		TerminalBorder: lipgloss.NewStyle().
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("#4A5972")),
+			Foreground(lipgloss.Color("#4A5972")),
 	}
 }
 
@@ -151,7 +150,6 @@ func retroTerminalTheme() Theme {
 		Muted:        lipgloss.NewStyle().Foreground(lipgloss.Color("#73A17A")),
 		Info:         lipgloss.NewStyle().Foreground(lime),
 		TerminalBorder: lipgloss.NewStyle().
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("#1F5C2F")),
+			Foreground(lipgloss.Color("#1F5C2F")),
 	}
 }

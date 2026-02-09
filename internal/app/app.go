@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -82,19 +81,20 @@ type App struct {
 		Error     string
 	}
 
-	checkMu              sync.Mutex
-	checkRunning         bool
-	checkQueued          bool
-	queuedManual         bool
-	autoCheckMu          sync.Mutex
-	autoCheckStop        context.CancelFunc
-	autoCheckMode        string
-	autoCheckDebounce    time.Duration
-	autoCheckQuietFail   bool
-	autoCheckPending     bool
-	autoCheckLastEvent   time.Time
-	autoCheckLastCmdSig  string
-	autoCheckLastWorkSig string
+	checkMu             sync.Mutex
+	checkRunning        bool
+	checkQueued         bool
+	queuedManual        bool
+	autoCheckMu         sync.Mutex
+	autoCheckStop       context.CancelFunc
+	autoCheckMode       string
+	autoCheckDebounce   time.Duration
+	autoCheckQuietFail  bool
+	autoCheckPending    bool
+	autoCheckLastEvent  time.Time
+	autoCheckLastCmdSig string
+	autoCheckLastFSSig  string
+	autoCheckPaths      []string
 
 	imageMu      sync.Mutex
 	ensuredImage map[string]bool
@@ -136,6 +136,7 @@ func New(cfg Config) (*App, error) {
 	view := ui.New(ui.Options{
 		ASCIIOnly:    cfg.ASCIIOnly,
 		Debug:        cfg.DebugLayout,
+		DevMode:      cfg.Dev,
 		TermPane:     termPane,
 		StyleVariant: cfg.UI.StyleVariant,
 		MotionLevel:  cfg.UI.MotionLevel,
@@ -768,6 +769,7 @@ func (a *App) startAutoCheckLoop() {
 	if mode == "off" {
 		return
 	}
+	watchPaths := a.autoCheckWatchPaths()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -779,11 +781,14 @@ func (a *App) startAutoCheckLoop() {
 	a.autoCheckPending = false
 	a.autoCheckLastEvent = time.Time{}
 	a.autoCheckLastCmdSig = a.cmdLogSignature()
-	a.autoCheckLastWorkSig = a.workDirSignature()
+	a.autoCheckLastFSSig = a.autoCheckFilesSignature(watchPaths)
+	a.autoCheckPaths = append([]string(nil), watchPaths...)
 	a.autoCheckMu.Unlock()
 
 	go func() {
-		ticker := time.NewTicker(250 * time.Millisecond)
+		// Keep auto-check source polling lightweight. Auto-check is off by default,
+		// and when enabled we only sample signatures once per second.
+		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -821,6 +826,9 @@ func (a *App) stopAutoCheckLoop() {
 	a.autoCheckStop = nil
 	a.autoCheckPending = false
 	a.autoCheckLastEvent = time.Time{}
+	a.autoCheckLastCmdSig = ""
+	a.autoCheckLastFSSig = ""
+	a.autoCheckPaths = nil
 	a.autoCheckMu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -838,23 +846,26 @@ func (a *App) requeueAutoCheck() {
 }
 
 func (a *App) levelAutoCheckConfig() (string, time.Duration, bool) {
-	mode := strings.TrimSpace(a.cfg.Gameplay.AutoCheckDefault)
-	if mode == "" {
-		mode = "command_and_fs_debounce"
-	}
+	mode := normalizeAutoCheckMode(a.cfg.Gameplay.AutoCheckDefault)
 	debounceMS := a.cfg.Gameplay.AutoCheckDebounceMS
 	if debounceMS <= 0 {
 		debounceMS = 800
 	}
 	quietFail := true
-	if strings.TrimSpace(a.level.XAutoCheck.Mode) != "" {
-		mode = strings.TrimSpace(a.level.XAutoCheck.Mode)
-	}
-	if a.level.XAutoCheck.DebounceMS > 0 {
-		debounceMS = a.level.XAutoCheck.DebounceMS
-	}
-	if a.level.XAutoCheck.QuietFail != nil {
-		quietFail = *a.level.XAutoCheck.QuietFail
+
+	// Level-level auto-check config is only active when a user has explicitly
+	// enabled auto-check globally. This keeps gameplay deterministic and avoids
+	// background grading in the default manual-check mode.
+	if mode != "off" {
+		if raw := strings.TrimSpace(a.level.XAutoCheck.Mode); raw != "" {
+			mode = normalizeAutoCheckMode(raw)
+		}
+		if a.level.XAutoCheck.DebounceMS > 0 {
+			debounceMS = a.level.XAutoCheck.DebounceMS
+		}
+		if a.level.XAutoCheck.QuietFail != nil {
+			quietFail = *a.level.XAutoCheck.QuietFail
+		}
 	}
 	return mode, time.Duration(debounceMS) * time.Millisecond, quietFail
 }
@@ -863,7 +874,8 @@ func (a *App) pollAutoCheckSources() bool {
 	a.autoCheckMu.Lock()
 	mode := a.autoCheckMode
 	lastCmdSig := a.autoCheckLastCmdSig
-	lastWorkSig := a.autoCheckLastWorkSig
+	lastFSSig := a.autoCheckLastFSSig
+	watchPaths := append([]string(nil), a.autoCheckPaths...)
 	a.autoCheckMu.Unlock()
 
 	changed := false
@@ -877,11 +889,11 @@ func (a *App) pollAutoCheckSources() bool {
 		}
 	}
 	if mode == "command_and_fs_debounce" {
-		workSig := a.workDirSignature()
-		if workSig != "" && workSig != lastWorkSig {
+		fsSig := a.autoCheckFilesSignature(watchPaths)
+		if fsSig != "" && fsSig != lastFSSig {
 			changed = true
 			a.autoCheckMu.Lock()
-			a.autoCheckLastWorkSig = workSig
+			a.autoCheckLastFSSig = fsSig
 			a.autoCheckMu.Unlock()
 		}
 	}
@@ -899,42 +911,69 @@ func (a *App) cmdLogSignature() string {
 	return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
 }
 
-func (a *App) workDirSignature() string {
+func (a *App) autoCheckWatchPaths() []string {
 	if a.handle == nil {
-		return ""
+		return nil
 	}
 	workDir := a.handle.WorkDir()
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(a.level.Checks))
+	for _, check := range a.level.Checks {
+		for _, raw := range []string{check.Path, check.CompareToPath} {
+			path := strings.TrimSpace(raw)
+			if path == "" {
+				continue
+			}
+			resolved, ok := resolveLevelWorkPath(workDir, path)
+			if !ok {
+				continue
+			}
+			if _, exists := seen[resolved]; exists {
+				continue
+			}
+			seen[resolved] = struct{}{}
+			out = append(out, resolved)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func resolveLevelWorkPath(workDir, path string) (string, bool) {
+	if workDir == "" || path == "" {
+		return "", false
+	}
+	if path == "/work" {
+		return workDir, true
+	}
+	if strings.HasPrefix(path, "/work/") {
+		return filepath.Join(workDir, strings.TrimPrefix(path, "/work/")), true
+	}
+	if filepath.IsAbs(path) {
+		return "", false
+	}
+	return filepath.Join(workDir, path), true
+}
+
+func (a *App) autoCheckFilesSignature(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
 	var b strings.Builder
-	_ = filepath.WalkDir(workDir, func(path string, d fs.DirEntry, err error) error {
+	for _, path := range paths {
+		info, err := os.Stat(path)
 		if err != nil {
-			return nil
+			b.WriteString(path)
+			b.WriteString(":missing;")
+			continue
 		}
-		rel, relErr := filepath.Rel(workDir, path)
-		if relErr != nil || rel == "." {
-			return nil
-		}
-		base := filepath.Base(rel)
-		if base == ".dojo_cmdlog" || base == ".dojo_bash_history" {
-			return nil
-		}
-		info, infoErr := d.Info()
-		if infoErr != nil {
-			return nil
-		}
-		b.WriteString(rel)
-		b.WriteString("|")
-		if d.IsDir() {
-			b.WriteString("d")
-		} else {
-			b.WriteString("f")
-		}
-		b.WriteString("|")
+		b.WriteString(path)
+		b.WriteString(":")
 		b.WriteString(strconv.FormatInt(info.Size(), 10))
-		b.WriteString("|")
+		b.WriteString(":")
 		b.WriteString(strconv.FormatInt(info.ModTime().UnixNano(), 10))
-		b.WriteString("\n")
-		return nil
-	})
+		b.WriteString(";")
+	}
 	return b.String()
 }
 
@@ -1080,22 +1119,13 @@ func (a *App) OnChangeLevel() {
 }
 
 func (a *App) OnOpenSettings() {
-	text := fmt.Sprintf(
-		"Sandbox: %s\nEngine: %s\nData dir: %s\nASCII only: %t\nDebug layout: %t\nKeep artifacts: %t\nDev HTTP: %s\nAuto-check: %s (%dms)\nStyle: %s\nMotion: %s\nMouse scope: %s",
-		a.cfg.SandboxMode,
-		a.engine.Name,
-		a.cfg.DataDir,
-		a.cfg.ASCIIOnly,
-		a.cfg.DebugLayout,
-		a.cfg.KeepArtifacts,
-		a.cfg.DevHTTP,
-		a.cfg.Gameplay.AutoCheckDefault,
-		a.cfg.Gameplay.AutoCheckDebounceMS,
-		a.cfg.UI.StyleVariant,
-		a.cfg.UI.MotionLevel,
-		a.cfg.UI.MouseScope,
-	)
-	a.view.SetInfo("Settings", text, true)
+	a.view.SetSettings(ui.SettingsState{
+		AutoCheckMode:       a.cfg.Gameplay.AutoCheckDefault,
+		AutoCheckDebounceMS: a.cfg.Gameplay.AutoCheckDebounceMS,
+		StyleVariant:        a.cfg.UI.StyleVariant,
+		MotionLevel:         a.cfg.UI.MotionLevel,
+		MouseScope:          a.cfg.UI.MouseScope,
+	}, true)
 }
 
 func (a *App) OnOpenStats() {
@@ -1104,8 +1134,59 @@ func (a *App) OnOpenStats() {
 		a.view.SetInfo("Stats", "Failed to load stats: "+err.Error(), true)
 		return
 	}
-	text := fmt.Sprintf("Level runs: %d\nCheck attempts: %d\nPasses: %d\nResets: %d", summary.LevelRuns, summary.Attempts, summary.Passes, summary.Resets)
+	dueReviews, _ := a.store.CountDueReviews(context.Background(), time.Now())
+	lastRun, _ := a.store.GetLastRun(context.Background())
+
+	text := fmt.Sprintf(
+		"Level runs: %d\nCheck attempts: %d\nPasses: %d\nResets: %d\nDue reviews: %d",
+		summary.LevelRuns,
+		summary.Attempts,
+		summary.Passes,
+		summary.Resets,
+		dueReviews,
+	)
+	if lastRun != nil {
+		text += fmt.Sprintf(
+			"\n\nLast run\nPack: %s\nLevel: %s\nAttempts: %d\nResets: %d\nPassed: %t\nStarted: %s",
+			lastRun.PackID,
+			lastRun.LevelID,
+			lastRun.Attempts,
+			lastRun.Resets,
+			lastRun.LastPassed,
+			lastRun.StartTS.Local().Format(time.RFC1123),
+		)
+	}
+	text += "\n\nPress r to refresh."
 	a.view.SetInfo("Stats", text, true)
+}
+
+func (a *App) OnApplySettings(update ui.SettingsState) {
+	updated := a.cfg
+	updated.Gameplay.AutoCheckDefault = normalizeAutoCheckMode(update.AutoCheckMode)
+	if update.AutoCheckDebounceMS <= 0 {
+		updated.Gameplay.AutoCheckDebounceMS = 800
+	} else {
+		updated.Gameplay.AutoCheckDebounceMS = update.AutoCheckDebounceMS
+	}
+	updated.UI.StyleVariant = update.StyleVariant
+	updated.UI.MotionLevel = update.MotionLevel
+	updated.UI.MouseScope = update.MouseScope
+	if err := updated.Validate(); err != nil {
+		a.view.FlashStatus("settings rejected: " + err.Error())
+		return
+	}
+	a.cfg = updated
+	if a.activeLevel {
+		a.startAutoCheckLoop()
+	}
+	a.view.FlashStatus(fmt.Sprintf(
+		"Settings applied: auto-check=%s (%dms), style=%s, motion=%s, mouse=%s",
+		a.cfg.Gameplay.AutoCheckDefault,
+		a.cfg.Gameplay.AutoCheckDebounceMS,
+		a.cfg.UI.StyleVariant,
+		a.cfg.UI.MotionLevel,
+		a.cfg.UI.MouseScope,
+	))
 }
 
 func (a *App) OnNextLevel() {
@@ -1440,15 +1521,27 @@ func (a *App) runDemoScenario(ctx context.Context, requested string, timeout tim
 
 func (a *App) startDevHTTP() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/__dev/ready", func(w http.ResponseWriter, r *http.Request) {
+	withCORS := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next(w, r)
+		}
+	}
+	mux.HandleFunc("/__dev/ready", withCORS(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(a.getDevState())
-	})
-	mux.HandleFunc("/__dev/demo", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("/__dev/demo", withCORS(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -1481,7 +1574,7 @@ func (a *App) startDevHTTP() error {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "state": resolved, "requested": req.Demo})
-	})
+	}))
 
 	a.devServer = &http.Server{Addr: a.cfg.DevHTTP, Handler: mux}
 	a.setDevState("main_menu", a.cfg.DemoScenario)
@@ -1831,6 +1924,19 @@ func ifThenElse(cond bool, a, b string) string {
 		return a
 	}
 	return b
+}
+
+func normalizeAutoCheckMode(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case "", "off", "manual":
+		return "off"
+	case "command_debounce":
+		return "command_debounce"
+	case "command_and_fs_debounce":
+		return "command_and_fs_debounce"
+	default:
+		return "off"
+	}
 }
 
 func min(a, b int) int {

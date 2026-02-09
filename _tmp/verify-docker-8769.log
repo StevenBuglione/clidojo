@@ -1,0 +1,18 @@
+Starting web terminal at http://127.0.0.1:8769
+tmux session: clidojo-verify-docker
+command: ./bin/clidojo --dev --sandbox=docker --dev-http=127.0.0.1:17321
+[2026/02/08 21:25:34:4835] N: ttyd 1.7.7-40e79c7 (libwebsockets 4.3.3-unknown)
+[2026/02/08 21:25:34:4836] N: tty configuration:
+[2026/02/08 21:25:34:4836] N:   start command: tmux -f tools/webterm/tmux.conf attach -t clidojo-verify-docker
+[2026/02/08 21:25:34:4836] N:   close signal: SIGHUP (1)
+[2026/02/08 21:25:34:4836] N:   terminal type: xterm-256color
+[2026/02/08 21:25:34:4836] N:   max clients: 1
+[2026/02/08 21:25:34:4836] N: lws_create_context: LWS: 4.3.3-unknown, MbedTLS-2.28.5 NET SRV H1 H2 WS ConMon IPV6-off
+[2026/02/08 21:25:34:4890] N: elops_init_pt_uv:  Using foreign event loop...
+[2026/02/08 21:25:34:4890] N: __lws_lc_tag:  ++ [wsi|0|pipe] (1)
+[2026/02/08 21:25:34:4891] N: __lws_lc_tag:  ++ [vh|0|netlink] (1)
+[2026/02/08 21:25:34:4915] N: __lws_lc_tag:  ++ [vh|1|default|127.0.0.1|127.0.0.1|8769] (2)
+[2026/02/08 21:25:34:5016] E: [null wsi]: lws_socket_bind: ERROR on binding fd 12 to port 8769 (-1 98)
+[2026/02/08 21:25:34:5017] E: [vh|1|default|127.0.0.1|127.0.0.1|8769]: lws_create_vhost: init server failed
+[2026/02/08 21:25:34:5017] N: __lws_lc_untag:  -- [vh|1|default|127.0.0.1|127.0.0.1|8769] (1) 10.243ms
+[2026/02/08 21:25:34:5017] E: libwebsockets vhost creation failed

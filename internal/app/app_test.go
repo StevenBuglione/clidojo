@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,14 +60,14 @@ func TestLevelAutoCheckConfigDefaultsAndOverride(t *testing.T) {
 	a := &App{
 		cfg: Config{
 			Gameplay: GameplayConfig{
-				AutoCheckDefault:    "command_and_fs_debounce",
+				AutoCheckDefault:    "command_debounce",
 				AutoCheckDebounceMS: 800,
 			},
 		},
 		level: levels.Level{},
 	}
 	mode, debounce, quiet := a.levelAutoCheckConfig()
-	if mode != "command_and_fs_debounce" {
+	if mode != "command_debounce" {
 		t.Fatalf("unexpected default mode: %q", mode)
 	}
 	if debounce != 800*time.Millisecond {
@@ -92,27 +93,63 @@ func TestLevelAutoCheckConfigDefaultsAndOverride(t *testing.T) {
 	if quiet {
 		t.Fatalf("expected quiet fail override false")
 	}
+
+	a.cfg.Gameplay.AutoCheckDefault = "command_and_fs_debounce"
+	mode, debounce, quiet = a.levelAutoCheckConfig()
+	if mode != "command_debounce" {
+		t.Fatalf("unexpected override mode: %q", mode)
+	}
+	if debounce != 250*time.Millisecond {
+		t.Fatalf("unexpected override debounce: %v", debounce)
+	}
+	if quiet {
+		t.Fatalf("expected quiet fail override false")
+	}
 }
 
-func TestWorkDirSignatureIgnoresDojoLogs(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".dojo_cmdlog"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
+func TestLevelAutoCheckConfigIgnoresLevelOverrideWhenGlobalOff(t *testing.T) {
+	q := false
+	a := &App{
+		cfg: Config{
+			Gameplay: GameplayConfig{
+				AutoCheckDefault:    "off",
+				AutoCheckDebounceMS: 800,
+			},
+		},
+		level: levels.Level{
+			XAutoCheck: levels.AutoCheckExtension{
+				Mode:       "command_and_fs_debounce",
+				DebounceMS: 1200,
+				QuietFail:  &q,
+			},
+		},
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".dojo_bash_history"), []byte("y"), 0o644); err != nil {
-		t.Fatal(err)
+
+	mode, debounce, quiet := a.levelAutoCheckConfig()
+	if mode != "off" {
+		t.Fatalf("expected global off mode to win, got %q", mode)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "answer.txt"), []byte("ok"), 0o644); err != nil {
-		t.Fatal(err)
+	if debounce != 800*time.Millisecond {
+		t.Fatalf("expected global debounce when off, got %v", debounce)
 	}
-	a := &App{handle: fakeHandle{work: dir}}
-	s1 := a.workDirSignature()
-	if err := os.WriteFile(filepath.Join(dir, ".dojo_cmdlog"), []byte("changed"), 0o644); err != nil {
-		t.Fatal(err)
+	if !quiet {
+		t.Fatalf("expected default quiet fail when global off")
 	}
-	s2 := a.workDirSignature()
-	if s1 != s2 {
-		t.Fatalf("expected cmdlog edits to be ignored in work signature")
+}
+
+func TestNormalizeAutoCheckMode(t *testing.T) {
+	cases := map[string]string{
+		"":                        "off",
+		"manual":                  "off",
+		"off":                     "off",
+		"command_debounce":        "command_debounce",
+		"command_and_fs_debounce": "command_and_fs_debounce",
+		"something_unknown":       "off",
+	}
+	for in, want := range cases {
+		if got := normalizeAutoCheckMode(in); got != want {
+			t.Fatalf("normalizeAutoCheckMode(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -150,6 +187,53 @@ func TestAutoCheckBlockedByOverlay(t *testing.T) {
 	a.hintsOpen = true
 	if !a.autoCheckBlockedByOverlay() {
 		t.Fatalf("expected hints overlay to block auto-check")
+	}
+}
+
+func TestAutoCheckWatchPathsIncludesWorkFilesOnly(t *testing.T) {
+	dir := t.TempDir()
+	a := &App{
+		handle: fakeHandle{work: dir},
+		level: levels.Level{
+			Checks: []levels.CheckSpec{
+				{Path: "/work/out.txt"},
+				{CompareToPath: "/work/expected.txt"},
+				{Path: "/levels/current/input.txt"},
+				{Path: "relative.txt"},
+			},
+		},
+	}
+
+	paths := a.autoCheckWatchPaths()
+	if len(paths) != 3 {
+		t.Fatalf("expected 3 watch paths, got %d: %#v", len(paths), paths)
+	}
+	for _, p := range paths {
+		if !strings.HasPrefix(p, dir) {
+			t.Fatalf("watch path escaped work dir: %q", p)
+		}
+	}
+}
+
+func TestAutoCheckFilesSignatureChangesOnFileUpdate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.txt")
+	if err := os.WriteFile(path, []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &App{}
+	sigA := a.autoCheckFilesSignature([]string{path})
+	if sigA == "" {
+		t.Fatalf("expected non-empty signature")
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := os.WriteFile(path, []byte("two two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sigB := a.autoCheckFilesSignature([]string{path})
+	if sigA == sigB {
+		t.Fatalf("expected signature to change after file update")
 	}
 }
 

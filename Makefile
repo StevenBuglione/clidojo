@@ -1,7 +1,7 @@
 APP=clidojo
 BIN=bin/$(APP)
 
-.PHONY: build run test fmt dev-web dev-run snapshots image webterm webterm-restart webterm-mcp
+.PHONY: build run test fmt dev-web dev-run snapshots image webterm webterm-restart webterm-mcp e2e e2e-update
 
 build:
 	go build -o $(BIN) ./cmd/clidojo
@@ -35,6 +35,12 @@ fmt:
 
 snapshots:
 	./scripts/dev-snapshots.sh
+
+e2e:
+	cd e2e/playwright && corepack pnpm test
+
+e2e-update:
+	cd e2e/playwright && corepack pnpm run update-snapshots
 
 image:
 	docker build -t clidojo/builtin-core:0.1.0 -f packs/builtin-core/image/Dockerfile packs/builtin-core/image

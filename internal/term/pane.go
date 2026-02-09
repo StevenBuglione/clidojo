@@ -6,19 +6,20 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
+	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 	"github.com/gdamore/tcell/v2"
 	"github.com/hinshun/vt10x"
 	"github.com/rivo/tview"
 )
-
-var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 const (
 	bracketedPasteOnSeq  = "\x1b[?2004h"
@@ -29,7 +30,8 @@ const (
 type TerminalPane struct {
 	*tview.Box
 
-	mu sync.Mutex
+	mu   sync.Mutex
+	ioMu sync.Mutex
 
 	vt    vt10x.Terminal
 	cmd   *exec.Cmd
@@ -41,22 +43,25 @@ type TerminalPane struct {
 	playingBack  bool
 	playbackStop context.CancelFunc
 
-	scrollback      []string
-	scrollbackMax   int
-	inScrollback    bool
-	scrollbackIndex int
-	lineTail        string
-	modeTail        string
-	bracketedPaste  bool
+	scrollback        []string
+	scrollbackMax     int
+	inScrollback      bool
+	scrollbackIndex   int
+	lineTail          string
+	modeTail          string
+	bracketedPaste    bool
+	captureScrollback bool
+	totalOutputBytes  atomic.Int64
 }
 
 func NewTerminalPane(onDirty func()) *TerminalPane {
 	return &TerminalPane{
-		Box:           tview.NewBox().SetTitle(" Terminal ").SetBorder(true),
-		dirty:         onDirty,
-		scrollbackMax: 10000,
-		cols:          80,
-		rows:          24,
+		Box:               tview.NewBox().SetTitle(" Terminal ").SetBorder(true),
+		dirty:             onDirty,
+		scrollbackMax:     10000,
+		cols:              80,
+		rows:              24,
+		captureScrollback: false,
 	}
 }
 
@@ -103,6 +108,8 @@ func (p *TerminalPane) Start(ctx context.Context, command []string, cwd string, 
 	p.lineTail = ""
 	p.modeTail = ""
 	p.bracketedPaste = false
+	p.captureScrollback = false
+	p.totalOutputBytes.Store(0)
 	_ = vt10x.ResizePty(ptmx, max(1, p.cols), max(1, p.rows))
 	p.mu.Unlock()
 
@@ -140,6 +147,8 @@ func (p *TerminalPane) StartPlayback(ctx context.Context, frames []PlaybackFrame
 	p.lineTail = ""
 	p.modeTail = ""
 	p.bracketedPaste = false
+	p.captureScrollback = false
+	p.totalOutputBytes.Store(0)
 	p.mu.Unlock()
 
 	go p.playbackLoop(playCtx, frames, loop)
@@ -192,12 +201,21 @@ func (p *TerminalPane) readLoop() {
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
+			p.totalOutputBytes.Add(int64(n))
 
 			p.mu.Lock()
+			captureScrollback := p.captureScrollback || p.inScrollback
 			p.updateModesLocked(chunk)
-			_, _ = vt.Write(chunk)
-			p.appendScrollbackLocked(chunk)
 			p.mu.Unlock()
+
+			_, _ = vt.Write(chunk)
+
+			if captureScrollback {
+				plainChunk := stripForScrollback(chunk)
+				p.mu.Lock()
+				p.appendScrollbackPlainLocked(plainChunk)
+				p.mu.Unlock()
+			}
 			p.markDirty()
 		}
 		if err != nil {
@@ -206,9 +224,12 @@ func (p *TerminalPane) readLoop() {
 	}
 }
 
-func (p *TerminalPane) appendScrollbackLocked(chunk []byte) {
-	plain := ansiPattern.ReplaceAllString(string(chunk), "")
-	plain = strings.ReplaceAll(plain, "\r", "")
+// TotalOutputBytes returns a monotonic counter of PTY output bytes processed.
+func (p *TerminalPane) TotalOutputBytes() int64 {
+	return p.totalOutputBytes.Load()
+}
+
+func (p *TerminalPane) appendScrollbackPlainLocked(plain string) {
 	if plain == "" {
 		return
 	}
@@ -241,16 +262,18 @@ func (p *TerminalPane) Resize(cols, rows int) error {
 	p.mu.Lock()
 	p.cols = cols
 	p.rows = rows
-	if p.vt != nil {
-		p.vt.Resize(max(1, cols), max(1, rows))
+	vt := p.vt
+	ptmx := p.ptmx
+	p.mu.Unlock()
+
+	if vt != nil {
+		vt.Resize(max(1, cols), max(1, rows))
 	}
-	if p.ptmx != nil {
-		if err := vt10x.ResizePty(p.ptmx, max(1, cols), max(1, rows)); err != nil {
-			p.mu.Unlock()
+	if ptmx != nil {
+		if err := vt10x.ResizePty(ptmx, max(1, cols), max(1, rows)); err != nil {
 			return err
 		}
 	}
-	p.mu.Unlock()
 	p.markDirty()
 	return nil
 }
@@ -261,22 +284,35 @@ func (p *TerminalPane) SendInput(data []byte) error {
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.inScrollback {
+	inScrollback := p.inScrollback
+	playingBack := p.playingBack
+	vt := p.vt
+	ptmx := p.ptmx
+	p.mu.Unlock()
+
+	if inScrollback {
 		return nil
 	}
-	if p.playingBack {
-		if p.vt != nil {
-			_, _ = p.vt.Write(data)
-			p.appendScrollbackLocked(data)
-			p.markDirty()
+	if playingBack {
+		if vt == nil {
+			return nil
 		}
+		_, _ = vt.Write(data)
+		plain := stripForScrollback(data)
+		p.mu.Lock()
+		if p.captureScrollback || p.inScrollback {
+			p.appendScrollbackPlainLocked(plain)
+		}
+		p.mu.Unlock()
+		p.markDirty()
 		return nil
 	}
-	if p.ptmx == nil {
+	if ptmx == nil {
 		return nil
 	}
-	_, err := p.ptmx.Write(data)
+	p.ioMu.Lock()
+	_, err := ptmx.Write(data)
+	p.ioMu.Unlock()
 	return err
 }
 
@@ -290,6 +326,7 @@ func (p *TerminalPane) ToggleScrollback() {
 	p.mu.Lock()
 	p.inScrollback = !p.inScrollback
 	if p.inScrollback {
+		p.captureScrollback = true
 		p.scrollbackIndex = len(p.scrollback)
 	}
 	p.mu.Unlock()
@@ -326,22 +363,24 @@ func (p *TerminalPane) Draw(screen tcell.Screen) {
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.inScrollback {
-		p.drawScrollbackLocked(screen, x, y, width, height)
+		lines := p.scrollbackWindowLocked(height)
+		p.mu.Unlock()
+		p.drawScrollback(screen, x, y, width, height, lines)
 		return
 	}
+	vt := p.vt
+	p.mu.Unlock()
 
-	if p.vt == nil {
+	if vt == nil {
 		drawTextLine(screen, x, y, width, "No terminal session", tcell.StyleDefault.Foreground(tcell.ColorYellow))
 		return
 	}
 
-	p.vt.Lock()
-	defer p.vt.Unlock()
+	vt.Lock()
+	defer vt.Unlock()
 
-	vtCols, vtRows := p.vt.Size()
+	vtCols, vtRows := vt.Size()
 	drawW := min(width, max(0, vtCols))
 	drawH := min(height, max(0, vtRows))
 
@@ -354,47 +393,132 @@ func (p *TerminalPane) Draw(screen tcell.Screen) {
 
 	for row := 0; row < drawH; row++ {
 		for col := 0; col < drawW; col++ {
-			g, ok := p.safeCellLocked(col, row)
+			g, ok := p.safeCell(vt, col, row)
 			if !ok {
 				continue
 			}
-			ch := g.Char
-			if ch == 0 {
-				ch = ' '
-			}
+			ch := sanitizeGlyphRune(g.Char)
 			style := tcell.StyleDefault.Foreground(vtColorToCell(g.FG, true)).Background(vtColorToCell(g.BG, false))
 			screen.SetContent(x+col, y+row, ch, nil, style)
 		}
 	}
 
-	if p.vt.CursorVisible() {
-		cur := p.vt.Cursor()
+	if vt.CursorVisible() {
+		cur := vt.Cursor()
 		if cur.X >= 0 && cur.X < drawW && cur.Y >= 0 && cur.Y < drawH {
-			g, ok := p.safeCellLocked(cur.X, cur.Y)
+			g, ok := p.safeCell(vt, cur.X, cur.Y)
 			if !ok {
 				return
 			}
-			ch := g.Char
-			if ch == 0 {
-				ch = ' '
-			}
+			ch := sanitizeGlyphRune(g.Char)
 			style := tcell.StyleDefault.Foreground(vtColorToCell(g.BG, false)).Background(vtColorToCell(g.FG, true))
 			screen.SetContent(x+cur.X, y+cur.Y, ch, nil, style)
 		}
 	}
 }
 
-func (p *TerminalPane) drawScrollbackLocked(screen tcell.Screen, x, y, width, height int) {
-	for row := 0; row < height; row++ {
-		for col := 0; col < width; col++ {
-			screen.SetContent(x+col, y+row, ' ', nil, tcell.StyleDefault)
+// SnapshotFrame returns a cell-level snapshot of the visible terminal.
+// It is used by Bubble Tea renderers to preserve terminal colors and cursor.
+func (p *TerminalPane) SnapshotFrame(width, height int) Frame {
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+	out := Frame{
+		W:          width,
+		H:          height,
+		Cells:      make([]FrameCell, width*height),
+		CursorX:    -1,
+		CursorY:    -1,
+		CursorShow: false,
+	}
+	def := CellStyle{FGDefault: true, BGDefault: true}
+	for i := range out.Cells {
+		out.Cells[i] = FrameCell{Ch: ' ', Style: def}
+	}
+
+	p.mu.Lock()
+	if p.inScrollback {
+		lines := p.scrollbackWindowLocked(height)
+		p.mu.Unlock()
+		out.Scrollback = true
+		for row := 0; row < height && row < len(lines); row++ {
+			col := 0
+			for _, ch := range []rune(lines[row]) {
+				if col >= width {
+					break
+				}
+				out.Cells[row*width+col] = FrameCell{Ch: sanitizeGlyphRune(ch), Style: def}
+				col++
+			}
 		}
+		return out
+	}
+	vt := p.vt
+	p.mu.Unlock()
+
+	if vt == nil {
+		msg := []rune("No terminal session")
+		for i := 0; i < len(msg) && i < width; i++ {
+			out.Cells[i] = FrameCell{Ch: msg[i], Style: def}
+		}
+		return out
+	}
+
+	vt.Lock()
+	defer vt.Unlock()
+
+	vtCols, vtRows := vt.Size()
+	drawW := min(width, max(0, vtCols))
+	drawH := min(height, max(0, vtRows))
+	for row := 0; row < drawH; row++ {
+		for col := 0; col < drawW; col++ {
+			g, ok := p.safeCell(vt, col, row)
+			if !ok {
+				continue
+			}
+			out.Cells[row*width+col] = FrameCell{
+				Ch:    sanitizeGlyphRune(g.Char),
+				Style: glyphToCellStyle(g),
+			}
+		}
+	}
+
+	if vt.CursorVisible() {
+		cur := vt.Cursor()
+		if cur.X >= 0 && cur.X < width && cur.Y >= 0 && cur.Y < height {
+			out.CursorX = cur.X
+			out.CursorY = cur.Y
+			out.CursorShow = true
+		}
+	}
+
+	return out
+}
+
+func (p *TerminalPane) scrollbackWindowLocked(height int) []string {
+	if height <= 0 {
+		return nil
 	}
 	start := p.scrollbackIndex - height
 	if start < 0 {
 		start = 0
 	}
-	lines := p.scrollback[start:p.scrollbackIndex]
+	if p.scrollbackIndex > len(p.scrollback) {
+		p.scrollbackIndex = len(p.scrollback)
+	}
+	lines := append([]string(nil), p.scrollback[start:p.scrollbackIndex]...)
+	return lines
+}
+
+func (p *TerminalPane) drawScrollback(screen tcell.Screen, x, y, width, height int, lines []string) {
+	for row := 0; row < height; row++ {
+		for col := 0; col < width; col++ {
+			screen.SetContent(x+col, y+row, ' ', nil, tcell.StyleDefault)
+		}
+	}
 	for row, line := range lines {
 		drawTextLine(screen, x, y+row, width, line, tcell.StyleDefault)
 	}
@@ -413,44 +537,46 @@ func (p *TerminalPane) Snapshot(width, height int) Snapshot {
 	}
 
 	out := Snapshot{
-		Lines:      make([]string, height),
-		CursorX:    -1,
-		CursorY:    -1,
-		CursorShow: false,
+		Lines:       make([]string, height),
+		StyledLines: make([]string, height),
+		CursorX:     -1,
+		CursorY:     -1,
+		CursorShow:  false,
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.inScrollback {
+		lines := p.scrollbackWindowLocked(height)
+		p.mu.Unlock()
 		out.Scrollback = true
-		start := p.scrollbackIndex - height
-		if start < 0 {
-			start = 0
-		}
-		lines := p.scrollback[start:p.scrollbackIndex]
 		for row := 0; row < height; row++ {
 			if row < len(lines) {
 				out.Lines[row] = clipWidth(lines[row], width)
+				out.StyledLines[row] = out.Lines[row]
 			} else {
 				out.Lines[row] = strings.Repeat(" ", width)
+				out.StyledLines[row] = out.Lines[row]
 			}
 		}
 		return out
 	}
+	vt := p.vt
+	p.mu.Unlock()
 
-	if p.vt == nil {
+	if vt == nil {
 		out.Lines[0] = clipWidth("No terminal session", width)
+		out.StyledLines[0] = out.Lines[0]
 		for row := 1; row < height; row++ {
 			out.Lines[row] = strings.Repeat(" ", width)
+			out.StyledLines[row] = out.Lines[row]
 		}
 		return out
 	}
 
-	p.vt.Lock()
-	defer p.vt.Unlock()
+	vt.Lock()
+	defer vt.Unlock()
 
-	vtCols, vtRows := p.vt.Size()
+	vtCols, vtRows := vt.Size()
 	drawW := min(width, max(0, vtCols))
 	drawH := min(height, max(0, vtRows))
 
@@ -459,24 +585,46 @@ func (p *TerminalPane) Snapshot(width, height int) Snapshot {
 		for i := range buf {
 			buf[i] = ' '
 		}
+		var styled strings.Builder
+		var prev vtRenderStyle
+		hasStyle := false
 		if row < drawH {
 			for col := 0; col < drawW; col++ {
-				g, ok := p.safeCellLocked(col, row)
+				g, ok := p.safeCell(vt, col, row)
 				if !ok {
 					continue
 				}
-				ch := g.Char
-				if ch == 0 || !utf8.ValidRune(ch) {
-					ch = ' '
-				}
+				ch := sanitizeGlyphRune(g.Char)
 				buf[col] = ch
+				style := vtRenderStyleFromGlyph(g)
+				if !hasStyle || !style.equal(prev) {
+					styled.WriteString(style.sgr())
+					prev = style
+					hasStyle = true
+				}
+				styled.WriteRune(ch)
 			}
+			for col := drawW; col < width; col++ {
+				spaceStyle := vtRenderStyleDefault()
+				if !hasStyle || !spaceStyle.equal(prev) {
+					styled.WriteString(spaceStyle.sgr())
+					prev = spaceStyle
+					hasStyle = true
+				}
+				styled.WriteRune(' ')
+			}
+		} else {
+			styled.WriteString(strings.Repeat(" ", width))
+		}
+		if hasStyle {
+			styled.WriteString("\x1b[0m")
 		}
 		out.Lines[row] = string(buf)
+		out.StyledLines[row] = styled.String()
 	}
 
-	if p.vt.CursorVisible() {
-		cur := p.vt.Cursor()
+	if vt.CursorVisible() {
+		cur := vt.Cursor()
 		if cur.X >= 0 && cur.X < width && cur.Y >= 0 && cur.Y < height {
 			out.CursorX = cur.X
 			out.CursorY = cur.Y
@@ -519,7 +667,9 @@ func (p *TerminalPane) playbackLoop(ctx context.Context, frames []PlaybackFrame,
 			if p.vt != nil {
 				p.updateModesLocked(frame.Data)
 				_, _ = p.vt.Write(frame.Data)
-				p.appendScrollbackLocked(frame.Data)
+				if p.captureScrollback || p.inScrollback {
+					p.appendScrollbackPlainLocked(stripForScrollback(frame.Data))
+				}
 			}
 			p.mu.Unlock()
 			p.markDirty()
@@ -546,6 +696,88 @@ func (p *TerminalPane) updateModesLocked(chunk []byte) {
 	p.modeTail = state
 }
 
+func stripForScrollback(chunk []byte) string {
+	plain := xansi.Strip(string(chunk))
+	plain = strings.ReplaceAll(plain, "\r", "")
+	return plain
+}
+
+const (
+	vtAttrReverse   int16 = 1 << 0
+	vtAttrUnderline int16 = 1 << 1
+	vtAttrBold      int16 = 1 << 2
+)
+
+type vtRenderStyle struct {
+	FG        vt10x.Color
+	BG        vt10x.Color
+	Bold      bool
+	Underline bool
+}
+
+func vtRenderStyleDefault() vtRenderStyle {
+	return vtRenderStyle{FG: vt10x.DefaultFG, BG: vt10x.DefaultBG}
+}
+
+func vtRenderStyleFromGlyph(g vt10x.Glyph) vtRenderStyle {
+	style := vtRenderStyle{
+		FG:        g.FG,
+		BG:        g.BG,
+		Bold:      g.Mode&vtAttrBold != 0,
+		Underline: g.Mode&vtAttrUnderline != 0,
+	}
+	if g.Mode&vtAttrReverse != 0 {
+		style.FG, style.BG = style.BG, style.FG
+	}
+	return style
+}
+
+func (s vtRenderStyle) equal(other vtRenderStyle) bool {
+	return s.FG == other.FG &&
+		s.BG == other.BG &&
+		s.Bold == other.Bold &&
+		s.Underline == other.Underline
+}
+
+func (s vtRenderStyle) sgr() string {
+	codes := []string{"0"}
+	if s.Bold {
+		codes = append(codes, "1")
+	}
+	if s.Underline {
+		codes = append(codes, "4")
+	}
+	codes = append(codes, vtColorToSGR(s.FG, true))
+	codes = append(codes, vtColorToSGR(s.BG, false))
+	return "\x1b[" + strings.Join(codes, ";") + "m"
+}
+
+func vtColorToSGR(c vt10x.Color, foreground bool) string {
+	if c == vt10x.DefaultFG || c == vt10x.DefaultBG || c == vt10x.DefaultCursor {
+		if foreground {
+			return "39"
+		}
+		return "49"
+	}
+	n := int(c)
+	if n >= 0 && n < 8 {
+		if foreground {
+			return strconv.Itoa(30 + n)
+		}
+		return strconv.Itoa(40 + n)
+	}
+	if n >= 8 && n < 16 {
+		if foreground {
+			return strconv.Itoa(90 + (n - 8))
+		}
+		return strconv.Itoa(100 + (n - 8))
+	}
+	if foreground {
+		return "38;5;" + strconv.Itoa(n)
+	}
+	return "48;5;" + strconv.Itoa(n)
+}
+
 func clipWidth(s string, w int) string {
 	if w <= 0 {
 		return ""
@@ -563,6 +795,29 @@ func clipWidth(s string, w int) string {
 	return string(r)
 }
 
+func sanitizeGlyphRune(ch rune) rune {
+	if ch == 0 || ch == utf8.RuneError || !utf8.ValidRune(ch) {
+		return ' '
+	}
+	switch ch {
+	case '\u25a1', '\u25a0', '\u25af', '\u2423', '\u2400':
+		return ' '
+	}
+	// Drop private-use glyphs frequently emitted as tofu boxes by browser terminal fonts.
+	if (ch >= 0xE000 && ch <= 0xF8FF) ||
+		(ch >= 0xF0000 && ch <= 0xFFFFD) ||
+		(ch >= 0x100000 && ch <= 0x10FFFD) {
+		return ' '
+	}
+	if ch < 0x20 || ch == 0x7f {
+		return ' '
+	}
+	if unicode.IsControl(ch) {
+		return ' '
+	}
+	return ch
+}
+
 func drawTextLine(screen tcell.Screen, x, y, width int, text string, style tcell.Style) {
 	if width <= 0 {
 		return
@@ -577,16 +832,16 @@ func drawTextLine(screen tcell.Screen, x, y, width int, text string, style tcell
 	}
 }
 
-func (p *TerminalPane) safeCellLocked(col, row int) (g vt10x.Glyph, ok bool) {
+func (p *TerminalPane) safeCell(vt vt10x.Terminal, col, row int) (g vt10x.Glyph, ok bool) {
 	defer func() {
 		if recover() != nil {
 			ok = false
 		}
 	}()
-	if p.vt == nil {
+	if vt == nil {
 		return g, false
 	}
-	return p.vt.Cell(col, row), true
+	return vt.Cell(col, row), true
 }
 
 func vtColorToCell(c vt10x.Color, fg bool) tcell.Color {
@@ -597,6 +852,28 @@ func vtColorToCell(c vt10x.Color, fg bool) tcell.Color {
 		return tcell.ColorBlack
 	}
 	return tcell.PaletteColor(int(c))
+}
+
+func glyphToCellStyle(g vt10x.Glyph) CellStyle {
+	style := CellStyle{
+		Bold:      g.Mode&vtAttrBold != 0,
+		Underline: g.Mode&vtAttrUnderline != 0,
+	}
+	if g.FG == vt10x.DefaultFG || g.FG == vt10x.DefaultBG || g.FG == vt10x.DefaultCursor {
+		style.FGDefault = true
+	} else {
+		style.FG = int(g.FG)
+	}
+	if g.BG == vt10x.DefaultFG || g.BG == vt10x.DefaultBG || g.BG == vt10x.DefaultCursor {
+		style.BGDefault = true
+	} else {
+		style.BG = int(g.BG)
+	}
+	if g.Mode&vtAttrReverse != 0 {
+		style.FG, style.BG = style.BG, style.FG
+		style.FGDefault, style.BGDefault = style.BGDefault, style.FGDefault
+	}
+	return style
 }
 
 func max(a, b int) int {
