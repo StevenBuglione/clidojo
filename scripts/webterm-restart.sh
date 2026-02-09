@@ -7,6 +7,7 @@ repo_root="$(cd "${script_dir}/.." && pwd)"
 host="${CLIDOJO_WEBTERM_HOST:-127.0.0.1}"
 port="${CLIDOJO_WEBTERM_PORT:-7681}"
 session="${CLIDOJO_WEBTERM_SESSION:-clidojo-debug}"
+use_tmux="${CLIDOJO_WEBTERM_USE_TMUX:-0}"
 
 echo "Rebuilding..." >&2
 (cd "${repo_root}" && make build >/dev/null)
@@ -22,7 +23,9 @@ if [ -n "${pid}" ]; then
   kill "${pid}" >/dev/null 2>&1 || true
 fi
 
-tmux kill-session -t "${session}" >/dev/null 2>&1 || true
+if [ "${use_tmux}" = "1" ] && command -v tmux >/dev/null 2>&1; then
+  tmux kill-session -t "${session}" >/dev/null 2>&1 || true
+fi
 
 echo "Starting fresh webterm at http://${host}:${port} (session ${session})" >&2
 mkdir -p "${repo_root}/_tmp"

@@ -3,7 +3,7 @@ package term
 import (
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/charmbracelet/bubbletea/v2"
 	"github.com/gdamore/tcell/v2"
 )
 

@@ -1,0 +1,30 @@
+Starting web terminal at http://127.0.0.1:7690
+mode: direct (no tmux)
+command: ./bin/clidojo --sandbox=docker --dev-http=127.0.0.1:17325
+[2026/02/09 05:15:08:2581] N: ttyd 1.7.7-40e79c7 (libwebsockets 4.3.3-unknown)
+[2026/02/09 05:15:08:2582] N: tty configuration:
+[2026/02/09 05:15:08:2582] N:   start command: /home/sbuglione/clidojo/_tmp/webterm-runner-clidojo-docker.sh
+[2026/02/09 05:15:08:2582] N:   close signal: SIGHUP (1)
+[2026/02/09 05:15:08:2582] N:   terminal type: xterm-256color
+[2026/02/09 05:15:08:2582] N:   max clients: 1
+[2026/02/09 05:15:08:2582] N: lws_create_context: LWS: 4.3.3-unknown, MbedTLS-2.28.5 NET SRV H1 H2 WS ConMon IPV6-off
+[2026/02/09 05:15:08:2633] N: elops_init_pt_uv:  Using foreign event loop...
+[2026/02/09 05:15:08:2633] N: __lws_lc_tag:  ++ [wsi|0|pipe] (1)
+[2026/02/09 05:15:08:2633] N: __lws_lc_tag:  ++ [vh|0|netlink] (1)
+[2026/02/09 05:15:08:2635] N: __lws_lc_tag:  ++ [vh|1|default|127.0.0.1|127.0.0.1|7690] (2)
+[2026/02/09 05:15:08:2737] N: [vh|1|default|127.0.0.1|127.0.0.1|7690]: lws_socket_bind: source ads 127.0.0.1
+[2026/02/09 05:15:08:2737] N: __lws_lc_tag:  ++ [wsi|1|listen|default|127.0.0.1|7690] (2)
+[2026/02/09 05:15:08:2737] N:  Listening on port: 7690
+[2026/02/09 05:15:24:4277] N: __lws_lc_tag:  ++ [wsisrv|0|adopted] (1)
+[2026/02/09 05:15:34:4749] N: __lws_lc_untag:  -- [wsisrv|0|adopted] (0) 10.050s
+[2026/02/09 05:16:31:6975] N: __lws_lc_tag:  ++ [wsisrv|1|adopted] (1)
+[2026/02/09 05:16:31:6977] N: HTTP / - 127.0.0.1
+[2026/02/09 05:16:31:8261] N: HTTP /token - 127.0.0.1
+[2026/02/09 05:16:31:8462] N: __lws_lc_tag:  ++ [wsisrv|2|adopted] (2)
+[2026/02/09 05:16:31:8464] N: WS   /ws - 127.0.0.1, clients: 1
+[2026/02/09 05:16:31:8515] N: started process, pid: 64939
+[2026/02/09 05:16:36:8455] N: __lws_lc_untag:  -- [wsisrv|1|adopted] (1) 5.151s
+[2026/02/09 05:21:33:2977] N: received signal: SIGTERM (15), exiting...
+[2026/02/09 05:21:33:2978] N: send ^C to force exit.
+[2026/02/09 05:21:33:2979] N: WS closed from 127.0.0.1, clients: 0
+[2026/02/09 05:21:33:2979] N: killing process, pid: 64939

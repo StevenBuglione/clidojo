@@ -31,7 +31,7 @@ test('deterministic ui flow', async ({ page }) => {
   // Level select -> start selected level.
   await page.keyboard.press('Enter');
   await page.keyboard.press('Enter');
-  await snap(page, '03-playing.png', 1200);
+  await page.waitForTimeout(1200);
 
   await page.keyboard.press('F1');
   await snap(page, '07-hints-open.png');

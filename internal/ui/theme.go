@@ -1,6 +1,6 @@
 package ui
 
-import lipgloss "charm.land/lipgloss/v2"
+import lipgloss "github.com/charmbracelet/lipgloss/v2"
 
 type Theme struct {
 	Header         lipgloss.Style

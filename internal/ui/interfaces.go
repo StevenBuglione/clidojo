@@ -4,6 +4,9 @@ import "time"
 
 type Controller interface {
 	OnContinue()
+	OnStartDailyDrill()
+	OnStartCampaign()
+	OnStartPractice()
 	OnOpenLevelSelect()
 	OnStartLevel(packID, levelID string)
 	OnBackToMainMenu()
@@ -67,9 +70,12 @@ type LayoutMode int
 
 const (
 	LayoutWide LayoutMode = iota
-	LayoutMedium
+	LayoutCompact
 	LayoutTooSmall
 )
+
+// LayoutMedium is kept as a compatibility alias for tests and older code.
+const LayoutMedium LayoutMode = LayoutCompact
 
 type PlayingState struct {
 	ModeLabel string
@@ -134,6 +140,7 @@ type JournalEntry struct {
 }
 
 type MainMenuState struct {
+	ModeLabel   string
 	EngineName  string
 	PackCount   int
 	LevelCount  int
@@ -172,4 +179,9 @@ type LevelSummary struct {
 	ObjectiveBullets []string
 	Concepts         []string
 	Tier             int
+	Prerequisites    []string
+	Locked           bool
+	LockReason       string
+	PassedCount      int
+	BestScore        int
 }

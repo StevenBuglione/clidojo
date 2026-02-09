@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"runtime/debug"
 	"strings"
@@ -11,18 +12,19 @@ import (
 
 	"clidojo/internal/term"
 
-	"charm.land/bubbles/v2/help"
-	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/progress"
-	"charm.land/bubbles/v2/spinner"
-	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/bubbles/v2/help"
+	"github.com/charmbracelet/bubbles/v2/key"
+	"github.com/charmbracelet/bubbles/v2/list"
+	"github.com/charmbracelet/bubbles/v2/progress"
+	"github.com/charmbracelet/bubbles/v2/spinner"
+	"github.com/charmbracelet/bubbles/v2/viewport"
+	tea "github.com/charmbracelet/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/harmonica"
+	"github.com/charmbracelet/lipgloss/v2"
 	clog "github.com/charmbracelet/log"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/charmbracelet/x/cellbuf"
 )
 
 type applyMsg struct {
@@ -32,7 +34,11 @@ type applyMsg struct {
 type drawMsg struct{}
 type clockMsg time.Time
 type animateMsg time.Time
+type spinnerStartMsg struct{}
 type escFlushMsg struct {
+	seq uint64
+}
+type csiFlushMsg struct {
 	seq uint64
 }
 
@@ -52,6 +58,21 @@ func (k gameKeyMap) ShortHelp() []key.Binding {
 
 func (k gameKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{{k.Hints, k.Goal, k.Journal, k.Check}, {k.Reset, k.Scrollback, k.Menu}}
+}
+
+type uiListItem struct {
+	title       string
+	description string
+	filterValue string
+}
+
+func (i uiListItem) Title() string       { return i.title }
+func (i uiListItem) Description() string { return i.description }
+func (i uiListItem) FilterValue() string {
+	if strings.TrimSpace(i.filterValue) != "" {
+		return i.filterValue
+	}
+	return strings.TrimSpace(i.title + " " + i.description)
 }
 
 type Root struct {
@@ -102,6 +123,7 @@ type Root struct {
 	journalOpen   bool
 	resetOpen     bool
 	settingsOpen  bool
+	briefingOpen  bool
 	infoOpen      bool
 	referenceOpen bool
 	diffOpen      bool
@@ -119,6 +141,12 @@ type Root struct {
 	settingsIndex int
 
 	settings SettingsState
+
+	mainList  list.Model
+	packList  list.Model
+	levelList list.Model
+	detailVP  viewport.Model
+	detailMD  string
 
 	help       help.Model
 	keymap     gameKeyMap
@@ -144,6 +172,8 @@ type Root struct {
 	pendingEsc     bool
 	pendingEscSeq  uint64
 	escFragment    bool
+	pendingCSI     byte
+	pendingCSISeq  uint64
 }
 
 type Options struct {
@@ -179,8 +209,7 @@ func New(opts Options) *Root {
 	spring := springForMotion(motionLevel)
 	mastery := progress.New(
 		progress.WithWidth(20),
-		progress.WithColors(lipgloss.Color("#5EC2FF"), lipgloss.Color("#79E6A6"), lipgloss.Color("#F2D16B")),
-		progress.WithScaled(true),
+		progress.WithScaledGradient("#5EC2FF", "#79E6A6"),
 	)
 	if motionLevel == "off" {
 		mastery.SetSpringOptions(1000.0, 1.0)
@@ -189,6 +218,21 @@ func New(opts Options) *Root {
 		spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(theme.Accent),
 	)
+	delegate := list.NewDefaultDelegate()
+	delegate.SetHeight(1)
+	delegate.SetSpacing(0)
+	delegate.ShowDescription = false
+	newList := func() list.Model {
+		m := list.New([]list.Item{}, delegate, 0, 0)
+		m.SetShowTitle(false)
+		m.SetShowHelp(false)
+		m.SetShowPagination(false)
+		m.SetShowStatusBar(false)
+		m.SetShowFilter(false)
+		m.SetFilteringEnabled(false)
+		m.DisableQuitKeybindings()
+		return m
+	}
 
 	r := &Root{
 		theme:        theme,
@@ -205,6 +249,10 @@ func New(opts Options) *Root {
 		cols:         120,
 		rows:         30,
 		help:         h,
+		mainList:     newList(),
+		packList:     newList(),
+		levelList:    newList(),
+		detailVP:     viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
 		mastery:      mastery,
 		checkSpin:    checkSpin,
 		markdown:     renderer,
@@ -232,6 +280,8 @@ func New(opts Options) *Root {
 		Scrollback: key.NewBinding(key.WithKeys("f9"), key.WithHelp("F9", "Scrollback")),
 		Menu:       key.NewBinding(key.WithKeys("f10"), key.WithHelp("F10", "Menu")),
 	}
+	r.refreshMainMenuList()
+	r.refreshLevelSelectLists()
 	go r.controllerLoop()
 	return r
 }
@@ -245,7 +295,7 @@ func (r *Root) controllerLoop() {
 }
 
 func (r *Root) Init() tea.Cmd {
-	return tea.Batch(clockTickCmd(), animateTickCmd(), spinnerTickCmd(r.checkSpin))
+	return tea.Batch(clockTickCmd(), animateTickCmd())
 }
 
 func (r *Root) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
@@ -297,14 +347,22 @@ func (r *Root) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			r.overlayVel = 0
 		}
 		return r, nil
+	case spinnerStartMsg:
+		if !r.checking {
+			return r, nil
+		}
+		return r, spinnerTickCmd(r.checkSpin)
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		r.checkSpin, cmd = r.checkSpin.Update(msg)
-		return r, cmd
+		if !r.checking {
+			return r, nil
+		}
+		return r, tea.Batch(cmd, spinnerTickCmd(r.checkSpin))
 	case tea.PasteMsg:
 		return r.handlePaste(msg)
 	case tea.ClipboardMsg:
-		return r.handlePaste(tea.PasteMsg{Content: msg.Content})
+		return r.handlePaste(tea.PasteMsg(msg))
 	case tea.MouseClickMsg:
 		return r.handleMouseClick(msg)
 	case tea.MouseWheelMsg:
@@ -324,13 +382,24 @@ func (r *Root) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			return r, nil
 		}
 		r.pendingEsc = false
-		r.dispatchController(func(c Controller) { c.OnTerminalInput([]byte{0x1b}) })
+		r.sendTerminalInput([]byte{0x1b})
+		return r, nil
+	case csiFlushMsg:
+		if msg.seq != r.pendingCSISeq || r.pendingCSI == 0 {
+			return r, nil
+		}
+		prefix := r.pendingCSI
+		r.pendingCSI = 0
+		if r.screen != ScreenPlaying || r.overlayActive() {
+			return r, nil
+		}
+		r.sendTerminalInput([]byte{0x1b, prefix})
 		return r, nil
 	}
 	return r, nil
 }
 
-func (r *Root) View() (view tea.View) {
+func (r *Root) View() (view string) {
 	start := time.Now()
 	defer func() {
 		r.recordRenderFrame(time.Since(start))
@@ -344,7 +413,7 @@ func (r *Root) View() (view tea.View) {
 			if r.statusFlash == "" {
 				r.statusFlash = "Recovered UI panic"
 			}
-			view = tea.NewView(r.theme.Fail.Width(width).Render(trimForWidth(msg, max(1, width-1))))
+			view = r.theme.Fail.Width(width).Render(trimForWidth(msg, max(1, width-1)))
 		}
 	}()
 
@@ -365,16 +434,18 @@ func (r *Root) View() (view tea.View) {
 		base = r.renderPlaying()
 	}
 
-	if overlay := r.renderOverlay(); overlay != "" {
+	overlay := r.renderOverlay()
+	if overlay != "" {
 		base = dimScreen(base, r.cols, r.rows)
+	}
+	if r.confettiActive() {
+		base = r.applyConfetti(base)
+	}
+	if overlay != "" {
 		base = composeOverlay(base, overlay, r.cols, r.rows)
 	}
 	base = normalizeScreen(base, r.rows, r.cols)
-	v := tea.NewView(base)
-	v.AltScreen = true
-	v.MouseMode = r.currentMouseMode()
-	v.DisableBracketedPasteMode = false
-	return v
+	return base
 }
 
 func (r *Root) Run() error {
@@ -383,10 +454,15 @@ func (r *Root) Run() error {
 		r.mu.Unlock()
 		return nil
 	}
-	p := tea.NewProgram(
-		r,
+	opts := []tea.ProgramOption{
 		tea.WithColorProfile(colorprofile.ANSI256),
-	)
+		tea.WithAltScreen(),
+	}
+	if r.mouseScope != "off" {
+		opts = append(opts, tea.WithMouseCellMotion())
+	}
+
+	p := tea.NewProgram(r, opts...)
 	r.program = p
 	r.running = true
 	r.mu.Unlock()
@@ -416,12 +492,17 @@ func (r *Root) SetController(c Controller) {
 func (r *Root) SetScreen(screen Screen) {
 	r.apply(func(m *Root) {
 		m.screen = screen
+		if screen != ScreenLevelSelect {
+			m.briefingOpen = false
+		}
 		if screen == ScreenPlaying {
 			if m.state.StartedAt.IsZero() {
 				m.state.StartedAt = time.Now()
 			}
 			cols, rows := m.cols, m.rows
-			m.dispatchController(func(c Controller) { c.OnResize(cols, rows) })
+			if cols > 0 && rows > 0 {
+				m.dispatchController(func(c Controller) { c.OnResize(cols, rows) })
+			}
 		}
 	})
 }
@@ -429,6 +510,7 @@ func (r *Root) SetScreen(screen Screen) {
 func (r *Root) SetMainMenuState(state MainMenuState) {
 	r.apply(func(m *Root) {
 		m.mainMenu = state
+		m.refreshMainMenuList()
 	})
 }
 
@@ -436,6 +518,7 @@ func (r *Root) SetCatalog(packs []PackSummary) {
 	r.apply(func(m *Root) {
 		m.catalog = append([]PackSummary(nil), packs...)
 		m.syncCatalogSelection()
+		m.refreshLevelSelectLists()
 	})
 }
 
@@ -444,6 +527,7 @@ func (r *Root) SetLevelSelection(packID, levelID string) {
 		m.selectedPack = packID
 		m.selectedLevel = levelID
 		m.syncCatalogSelection()
+		m.refreshLevelSelectLists()
 	})
 }
 
@@ -589,6 +673,9 @@ func (r *Root) SetChecking(checking bool) {
 	r.apply(func(m *Root) {
 		m.checking = checking
 	})
+	if checking {
+		r.scheduleSpinner()
+	}
 }
 
 func (r *Root) FlashStatus(msg string) {
@@ -655,6 +742,28 @@ func (r *Root) dispatchController(fn func(Controller)) {
 	}
 }
 
+func (r *Root) sendTerminalInput(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	if r.term != nil {
+		_ = r.term.SendInput(data)
+		return
+	}
+	r.dispatchController(func(c Controller) { c.OnTerminalInput(data) })
+}
+
+func (r *Root) scheduleSpinner() {
+	r.mu.Lock()
+	p := r.program
+	running := r.running
+	r.mu.Unlock()
+	if !running || p == nil {
+		return
+	}
+	p.Send(spinnerStartMsg{})
+}
+
 func (r *Root) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	r.recordInputEvent(fmt.Sprintf("key:%v mod:%v text:%q", msg.Code, msg.Mod, msg.Text))
 
@@ -673,7 +782,8 @@ func (r *Root) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (r *Root) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
-	r.recordInputEvent(fmt.Sprintf("paste:%d", len(msg.Content)))
+	contentText := string(msg)
+	r.recordInputEvent(fmt.Sprintf("paste:%d", len(contentText)))
 
 	if r.screen != ScreenPlaying || r.overlayActive() {
 		return r, nil
@@ -681,18 +791,18 @@ func (r *Root) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 	if r.term != nil && r.term.InScrollback() {
 		r.term.ToggleScrollback()
 	}
-	if msg.Content == "" {
+	if contentText == "" {
 		return r, nil
 	}
 	bracketed := false
 	if r.term != nil {
 		bracketed = r.term.BracketedPasteEnabled()
 	}
-	content := term.EncodePasteToBytes(msg.Content, bracketed)
+	content := term.EncodePasteToBytes(contentText, bracketed)
 	if len(content) == 0 {
 		return r, nil
 	}
-	r.dispatchController(func(c Controller) { c.OnTerminalInput(content) })
+	r.sendTerminalInput(content)
 	return r, nil
 }
 
@@ -803,7 +913,16 @@ func (r *Root) handleLevelSelectMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		r.catalogFocus = 1
 		r.levelIndex = wrapIndex(idx, len(levels))
 		r.syncSelectionFromIndices()
-		r.startSelectedLevel()
+		level := levels[r.levelIndex]
+		if level.Locked {
+			reason := strings.TrimSpace(level.LockReason)
+			if reason == "" {
+				reason = "Level is locked."
+			}
+			r.statusFlash = reason
+			return r, nil
+		}
+		r.briefingOpen = true
 		return r, nil
 	}
 	return r, nil
@@ -869,6 +988,9 @@ func (r *Root) handleOverlayMouseClick(x, y int) (tea.Model, tea.Cmd) {
 				r.stepSetting(action, true)
 			}
 		}
+	case "briefing":
+		r.briefingOpen = false
+		r.startSelectedLevel()
 	default:
 		_ = x
 	}
@@ -998,6 +1120,12 @@ func (r *Root) handleOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			msg.Mod&tea.ModCtrl == 0 && msg.Mod&tea.ModAlt == 0 {
 			r.dispatchController(func(c Controller) { c.OnOpenStats() })
 		}
+	case "briefing":
+		switch msg.Code {
+		case tea.KeyEnter:
+			r.briefingOpen = false
+			r.startSelectedLevel()
+		}
 	}
 	return r, nil
 }
@@ -1012,7 +1140,7 @@ func (r *Root) dismissTopOverlay() {
 		r.dispatchController(func(c Controller) { c.OnHints() })
 		// In medium layout, opening hints also opens the HUD drawer.
 		// Esc dismissal should close both to match expected UX.
-		if r.layout == LayoutMedium && r.goalOpen {
+		if r.layout == LayoutCompact && r.goalOpen {
 			r.goalOpen = false
 			r.dispatchController(func(c Controller) { c.OnGoal() })
 		}
@@ -1035,25 +1163,38 @@ func (r *Root) dismissAllOverlays() {
 
 func (r *Root) handleMainMenuKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	items := r.mainMenuItems()
-	switch msg.Code {
-	case tea.KeyUp:
-		r.mainMenuIndex = wrapIndex(r.mainMenuIndex-1, len(items))
-	case tea.KeyDown, tea.KeyTab:
-		r.mainMenuIndex = wrapIndex(r.mainMenuIndex+1, len(items))
-	case tea.KeyEnter:
-		r.activateMainMenuSelection()
-	case tea.KeyEsc:
-		r.dispatchController(func(c Controller) { c.OnQuit() })
+	if len(items) == 0 {
+		return r, nil
 	}
-	return r, nil
+	r.refreshMainMenuList()
+	switch msg.Code {
+	case tea.KeyEsc:
+		r.statusFlash = "Select Quit from the menu to exit."
+		return r, nil
+	case tea.KeyEnter:
+		r.mainMenuIndex = wrapIndex(r.mainList.Index(), len(items))
+		r.activateMainMenuSelection()
+		return r, nil
+	case tea.KeyTab:
+		r.mainMenuIndex = wrapIndex(r.mainMenuIndex+1, len(items))
+		r.mainList.Select(r.mainMenuIndex)
+		return r, nil
+	}
+	var cmd tea.Cmd
+	r.mainList, cmd = r.mainList.Update(msg)
+	r.mainMenuIndex = wrapIndex(r.mainList.Index(), len(items))
+	return r, cmd
 }
 
 func (r *Root) handleLevelSelectKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	r.refreshLevelSelectLists()
+
 	if msg.Mod&tea.ModCtrl != 0 {
 		switch msg.Code {
 		case 'u', 'U':
 			r.levelSearch = ""
 			r.syncSelectionFromIndices()
+			r.refreshLevelSelectLists()
 			return r, nil
 		}
 	}
@@ -1062,6 +1203,7 @@ func (r *Root) handleLevelSelectKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case 'f', 'F':
 			r.levelDiffBand = wrapIndex(r.levelDiffBand+1, 4)
 			r.syncSelectionFromIndices()
+			r.refreshLevelSelectLists()
 			return r, nil
 		}
 	}
@@ -1069,6 +1211,7 @@ func (r *Root) handleLevelSelectKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if r.levelSearch != "" {
 			r.levelSearch = ""
 			r.syncSelectionFromIndices()
+			r.refreshLevelSelectLists()
 			return r, nil
 		}
 		r.dispatchController(func(c Controller) { c.OnBackToMainMenu() })
@@ -1079,6 +1222,7 @@ func (r *Root) handleLevelSelectKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if len(rs) > 0 {
 			r.levelSearch = string(rs[:len(rs)-1])
 			r.syncSelectionFromIndices()
+			r.refreshLevelSelectLists()
 		}
 		return r, nil
 	}
@@ -1089,6 +1233,7 @@ func (r *Root) handleLevelSelectKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Mod == 0 && msg.Text != "" && msg.Code >= 32 && msg.Code != tea.KeyEnter {
 		r.levelSearch += msg.Text
 		r.syncSelectionFromIndices()
+		r.refreshLevelSelectLists()
 		return r, nil
 	}
 
@@ -1098,29 +1243,50 @@ func (r *Root) handleLevelSelectKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyRight, tea.KeyTab:
 		r.catalogFocus = 1
 	case tea.KeyUp:
-		if r.catalogFocus == 0 {
-			r.packIndex = wrapIndex(r.packIndex-1, len(r.catalog))
-			r.syncSelectionFromIndices()
-		} else {
-			levels := r.selectedPackLevels()
-			r.levelIndex = wrapIndex(r.levelIndex-1, len(levels))
-			r.syncSelectionFromIndices()
-		}
+		fallthrough
 	case tea.KeyDown:
+		fallthrough
+	case tea.KeyHome:
+		fallthrough
+	case tea.KeyEnd:
+		fallthrough
+	case tea.KeyPgUp:
+		fallthrough
+	case tea.KeyPgDown:
 		if r.catalogFocus == 0 {
-			r.packIndex = wrapIndex(r.packIndex+1, len(r.catalog))
+			var cmd tea.Cmd
+			r.packList, cmd = r.packList.Update(msg)
+			r.packIndex = wrapIndex(r.packList.Index(), max(1, len(r.packList.Items())))
 			r.syncSelectionFromIndices()
+			r.refreshLevelSelectLists()
+			return r, cmd
 		} else {
-			levels := r.selectedPackLevels()
-			r.levelIndex = wrapIndex(r.levelIndex+1, len(levels))
+			var cmd tea.Cmd
+			r.levelList, cmd = r.levelList.Update(msg)
+			r.levelIndex = wrapIndex(r.levelList.Index(), max(1, len(r.levelList.Items())))
 			r.syncSelectionFromIndices()
+			r.refreshLevelSelectLists()
+			return r, cmd
 		}
 	case tea.KeyEnter:
 		if r.catalogFocus == 0 {
 			r.catalogFocus = 1
 			return r, nil
 		}
-		r.startSelectedLevel()
+		levels := r.selectedPackLevels()
+		if len(levels) == 0 {
+			return r, nil
+		}
+		level := levels[wrapIndex(r.levelIndex, len(levels))]
+		if level.Locked {
+			reason := strings.TrimSpace(level.LockReason)
+			if reason == "" {
+				reason = "Level is locked."
+			}
+			r.statusFlash = reason
+			return r, nil
+		}
+		r.briefingOpen = true
 	}
 	return r, nil
 }
@@ -1134,19 +1300,63 @@ func (r *Root) handlePlayingKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			r.pendingEsc = false
 		} else if msg.Text == "[" || msg.Text == "O" || msg.Code == '[' || msg.Code == 'O' {
 			// Some browser/webterm paths split CSI into ESC + "[" + "B" events.
-			// Forward ESC+prefix now, then allow the trailing byte to follow on
-			// the next event, preserving a valid control sequence.
+			// Buffer ESC+prefix briefly so the trailing byte can be coalesced.
 			r.pendingEsc = false
-			prefix := "["
 			if msg.Text == "O" || msg.Code == 'O' {
-				prefix = "O"
+				r.pendingCSI = 'O'
+			} else {
+				r.pendingCSI = '['
 			}
-			r.dispatchController(func(c Controller) { c.OnTerminalInput([]byte{0x1b, prefix[0]}) })
-			return r, nil
+			r.pendingCSISeq++
+			return r, csiFlushCmd(r.pendingCSISeq)
 		} else {
 			r.pendingEsc = false
-			r.dispatchController(func(c Controller) { c.OnTerminalInput([]byte{0x1b}) })
+			r.sendTerminalInput([]byte{0x1b})
 		}
+	}
+	if r.pendingCSI != 0 {
+		prefix := r.pendingCSI
+		r.pendingCSI = 0
+		if msg.Text != "" {
+			// If websocket fragmentation delivers only the CSI prefix again, keep
+			// waiting briefly for the final byte.
+			if msg.Text == string(prefix) {
+				r.pendingCSI = prefix
+				r.pendingCSISeq++
+				return r, csiFlushCmd(r.pendingCSISeq)
+			}
+			// Some paths may deliver the entire CSI fragment as text (e.g. "[B").
+			// In that case we should not prepend the buffered prefix again.
+			if strings.HasPrefix(msg.Text, string(prefix)) || looksLikeEscFragmentText(msg.Text) {
+				r.sendTerminalInput(append([]byte{0x1b}, []byte(msg.Text)...))
+				return r, nil
+			}
+			payload := []byte{0x1b, prefix}
+			payload = append(payload, []byte(msg.Text)...)
+			r.sendTerminalInput(payload)
+			return r, nil
+		}
+
+		// If Bubble Tea surfaced the trailing key as a key code (e.g. KeyDown),
+		// use its terminal encoding directly to avoid emitting a bare ESC+[ prefix.
+		if encoded := term.EncodeKeyPressToBytes(msg); len(encoded) > 0 {
+			if encoded[0] == 0x1b {
+				r.sendTerminalInput(encoded)
+				return r, nil
+			}
+			payload := []byte{0x1b, prefix}
+			payload = append(payload, encoded...)
+			r.sendTerminalInput(payload)
+			return r, nil
+		}
+
+		if msg.Code >= 32 && msg.Code <= 126 {
+			r.sendTerminalInput([]byte{0x1b, prefix, byte(msg.Code)})
+			return r, nil
+		}
+
+		r.sendTerminalInput([]byte{0x1b, prefix})
+		return r, nil
 	}
 
 	if (msg.Code == tea.KeyInsert && msg.Mod&tea.ModShift != 0) ||
@@ -1242,6 +1452,7 @@ func (r *Root) handlePlayingKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		r.dispatchController(func(c Controller) { c.OnMenu() })
 		return r, nil
 	case tea.KeyEsc:
+		r.pendingCSI = 0
 		if r.goalOpen {
 			r.dispatchController(func(c Controller) { c.OnGoal() })
 			return r, r.animateIfNeeded()
@@ -1251,7 +1462,7 @@ func (r *Root) handlePlayingKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return r, nil
 		}
 		if !r.running || r.program == nil {
-			r.dispatchController(func(c Controller) { c.OnTerminalInput([]byte{0x1b}) })
+			r.sendTerminalInput([]byte{0x1b})
 			return r, nil
 		}
 		r.pendingEsc = true
@@ -1291,7 +1502,7 @@ func (r *Root) handlePlayingKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if data := term.EncodeKeyPressToBytes(msg); len(data) > 0 {
-		r.dispatchController(func(c Controller) { c.OnTerminalInput(data) })
+		r.sendTerminalInput(data)
 	}
 	return r, nil
 }
@@ -1299,19 +1510,25 @@ func (r *Root) handlePlayingKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (r *Root) renderMainMenu() string {
 	w, h := r.cols, r.rows
 	header := r.theme.Header.Width(max(1, w)).Render("CLI Dojo")
+	r.refreshMainMenuList()
 
 	items := r.mainMenuItems()
-	menuLines := make([]string, len(items))
-	for i, item := range items {
-		if i == r.mainMenuIndex {
-			menuLines[i] = r.theme.Accent.Render("> " + item.Label)
-			continue
-		}
-		menuLines[i] = "  " + item.Label
+	leftW := min(36, max(24, w/3))
+	bodyH := max(8, h-2)
+	if len(items) > 0 {
+		r.mainList.SetWidth(max(6, leftW-4))
+		r.mainList.SetHeight(max(3, bodyH-4))
+		r.mainList.Select(wrapIndex(r.mainMenuIndex, len(items)))
+		r.mainMenuIndex = wrapIndex(r.mainList.Index(), len(items))
 	}
-	left := r.drawPanel("Main Menu", menuLines, min(36, max(24, w/3)), max(8, h-2))
+	menuView := strings.TrimRight(r.mainList.View(), "\n")
+	menuLines := []string{"(empty)"}
+	if strings.TrimSpace(menuView) != "" {
+		menuLines = strings.Split(menuView, "\n")
+	}
+	left := r.drawPanel("Main Menu", menuLines, leftW, bodyH)
 	rightText := r.mainMenuInfoText(items)
-	right := r.drawPanel("Overview", strings.Split(strings.TrimSuffix(rightText, "\n"), "\n"), max(20, w-lipgloss.Width(left)), max(8, h-2))
+	right := r.drawPanel("Overview", strings.Split(strings.TrimSuffix(rightText, "\n"), "\n"), max(20, w-lipgloss.Width(left)), bodyH)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	if r.setupMsg != "" {
 		setup := r.drawPanel("Setup", strings.Split(strings.TrimSpace(r.setupMsg+"\n\n"+r.setupDetails), "\n"), min(100, w), 10)
@@ -1322,6 +1539,7 @@ func (r *Root) renderMainMenu() string {
 
 func (r *Root) renderLevelSelect() string {
 	w, h := r.cols, r.rows
+	r.refreshLevelSelectLists()
 	search := strings.TrimSpace(r.levelSearch)
 	filter := r.levelDiffBandLabel()
 	headerTxt := "CLI Dojo - Level Select"
@@ -1332,36 +1550,41 @@ func (r *Root) renderLevelSelect() string {
 	}
 	header := r.theme.Header.Width(max(1, w)).Render(trimForWidth(headerTxt, max(1, w-1)))
 
-	packs := make([]string, len(r.catalog))
-	for i, p := range r.catalog {
-		if r.catalogFocus == 0 && i == r.packIndex {
-			packs[i] = r.theme.Accent.Render(fmt.Sprintf("> %s (%d)", p.Name, len(p.Levels)))
-			continue
-		}
-		packs[i] = fmt.Sprintf("  %s (%d)", p.Name, len(p.Levels))
+	leftW := min(34, max(24, w/4))
+	bodyH := max(8, h-2)
+	if len(r.packList.Items()) > 0 {
+		r.packList.SetWidth(max(8, leftW-4))
+		r.packList.SetHeight(max(3, bodyH-4))
+		r.packList.Select(wrapIndex(r.packIndex, len(r.packList.Items())))
 	}
-	if len(packs) == 0 {
-		packs = []string{"No packs loaded."}
+	leftView := strings.TrimRight(r.packList.View(), "\n")
+	leftLines := []string{"No packs loaded."}
+	if strings.TrimSpace(leftView) != "" {
+		leftLines = strings.Split(leftView, "\n")
 	}
-	left := r.drawPanel("Packs", packs, min(34, max(24, w/4)), max(8, h-2))
+	left := r.drawPanel("Packs", leftLines, leftW, bodyH)
 
-	levels := r.selectedPackLevels()
-	levelLines := make([]string, len(levels))
-	for i, lv := range levels {
-		if r.catalogFocus == 1 && i == r.levelIndex {
-			levelLines[i] = r.theme.Accent.Render(fmt.Sprintf("> %s [d:%d ~%dm]", lv.Title, lv.Difficulty, lv.EstimatedMinutes))
-			continue
-		}
-		levelLines[i] = fmt.Sprintf("  %s [d:%d ~%dm]", lv.Title, lv.Difficulty, lv.EstimatedMinutes)
-	}
-	if len(levelLines) == 0 {
-		levelLines = []string{"No levels match current search/filter."}
-	}
 	middleW := min(46, max(28, w/3))
-	middle := r.drawPanel("Levels", levelLines, middleW, max(8, h-2))
+	if len(r.levelList.Items()) > 0 {
+		r.levelList.SetWidth(max(8, middleW-4))
+		r.levelList.SetHeight(max(3, bodyH-4))
+		r.levelList.Select(wrapIndex(r.levelIndex, len(r.levelList.Items())))
+	}
+	middleView := strings.TrimRight(r.levelList.View(), "\n")
+	levelLines := []string{"No levels match current search/filter."}
+	if strings.TrimSpace(middleView) != "" {
+		levelLines = strings.Split(middleView, "\n")
+	}
+	middle := r.drawPanel("Levels", levelLines, middleW, bodyH)
 
-	detail := r.levelDetailText()
-	right := r.drawPanel("Details", strings.Split(strings.TrimSuffix(detail, "\n"), "\n"), max(22, w-lipgloss.Width(left)-lipgloss.Width(middle)), max(8, h-2))
+	rightW := max(22, w-lipgloss.Width(left)-lipgloss.Width(middle))
+	r.updateDetailViewport(max(8, rightW-4), max(3, bodyH-4))
+	detailView := strings.TrimRight(r.detailVP.View(), "\n")
+	detailLines := []string{"No details available."}
+	if strings.TrimSpace(detailView) != "" {
+		detailLines = strings.Split(detailView, "\n")
+	}
+	right := r.drawPanel("Details", detailLines, rightW, bodyH)
 
 	return header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, middle, right)
 }
@@ -1369,6 +1592,11 @@ func (r *Root) renderLevelSelect() string {
 func (r *Root) renderPlaying() string {
 	w, h := r.cols, r.rows
 	mode := DetermineLayoutMode(w, h)
+	// Recover from stale forced-too-small state when dimensions are now valid.
+	// This can happen if a transient zero-size resize was observed while loading.
+	if mode != LayoutTooSmall {
+		r.forceTooSmall = false
+	}
 	if r.forceTooSmall {
 		mode = LayoutTooSmall
 	}
@@ -1384,7 +1612,7 @@ func (r *Root) renderPlaying() string {
 		msg := []string{
 			"Terminal too small",
 			fmt.Sprintf("Current: %dx%d", cols, rows),
-			"Minimum: 90x24",
+			"Minimum: 80x24",
 			"Resize the terminal to continue.",
 		}
 		panel := r.drawPanel("Resize Required", msg, min(60, w), min(12, h))
@@ -1412,7 +1640,7 @@ func (r *Root) renderPlaying() string {
 	}
 
 	base := header + "\n" + body + "\n" + status
-	if mode == LayoutMedium {
+	if mode == LayoutCompact {
 		drawer := r.renderGoalDrawer(bodyH)
 		if drawer != "" {
 			base = composeOverlayAt(base, drawer, w, h, bodyY, 0)
@@ -1638,18 +1866,39 @@ type overlaySpec struct {
 	startCol int
 }
 
+type confettiParticle struct {
+	row   int
+	col   int
+	glyph string
+}
+
 func (r *Root) overlaySpec(top string) (overlaySpec, bool) {
 	if top == "" {
 		return overlaySpec{}, false
 	}
-	w := min(max(56, r.cols-12), r.cols)
-	h := min(max(10, r.rows/2), max(8, r.rows-4))
+	maxModalW := max(28, r.cols-6)
+	maxModalH := max(8, r.rows-4)
+	minW := 48
+	maxWCap := min(maxModalW, 96)
+	minH := 10
+	contentWidth := func(lines []string) int {
+		width := 0
+		for _, line := range lines {
+			if w := ansi.StringWidth(line); w > width {
+				width = w
+			}
+		}
+		return width
+	}
 
 	var title string
 	var lines []string
 	switch top {
 	case "menu":
 		title = "Menu"
+		minW = 28
+		maxWCap = min(maxModalW, 44)
+		minH = 8
 		items := r.menuItems()
 		for i, item := range items {
 			if i == r.menuIndex {
@@ -1660,14 +1909,23 @@ func (r *Root) overlaySpec(top string) (overlaySpec, bool) {
 		}
 	case "hints":
 		title = "Hints"
+		minW = 56
+		maxWCap = min(maxModalW, 90)
+		minH = 12
 		lines = strings.Split(strings.TrimSuffix(r.hintsText(), "\n"), "\n")
 		lines = append(lines, "", "Enter: Reveal hint", "y: Copy hints", "Esc: Close")
 	case "journal":
 		title = "Journal"
+		minW = 58
+		maxWCap = min(maxModalW, 92)
+		minH = 12
 		lines = strings.Split(strings.TrimSuffix(r.journalText(), "\n"), "\n")
 		lines = append(lines, "", "Enter: AI Explain", "y: Copy current  Y/Ctrl+C: Copy all", "Esc: Close")
 	case "result":
 		title = "Results"
+		minW = 60
+		maxWCap = min(maxModalW, 110)
+		minH = 12
 		lines = strings.Split(strings.TrimSuffix(r.resultText(), "\n"), "\n")
 		buttons := r.resultButtons()
 		if len(buttons) > 0 {
@@ -1683,6 +1941,9 @@ func (r *Root) overlaySpec(top string) (overlaySpec, bool) {
 		lines = append(lines, "", "Ctrl+C: Copy results")
 	case "reset":
 		title = "Confirm Reset"
+		minW = 44
+		maxWCap = min(maxModalW, 64)
+		minH = 8
 		lines = []string{"Reset will destroy current /work state. Continue?", ""}
 		labels := []string{"Cancel", "Reset"}
 		for i, label := range labels {
@@ -1694,17 +1955,36 @@ func (r *Root) overlaySpec(top string) (overlaySpec, bool) {
 		}
 	case "settings":
 		title = "Settings"
+		minW = 56
+		maxWCap = min(maxModalW, 84)
+		minH = 12
 		lines = r.renderSettingsLines()
+	case "briefing":
+		title = "Level Briefing"
+		minW = 66
+		maxWCap = min(maxModalW, 112)
+		minH = 14
+		lines = strings.Split(strings.TrimSuffix(r.briefingText(), "\n"), "\n")
+		lines = append(lines, "", "Enter: Start level", "Esc: Back")
 	case "reference":
 		title = "Reference Solutions"
+		minW = 64
+		maxWCap = maxModalW
+		minH = 12
 		lines = strings.Split(strings.TrimSuffix(r.referenceText, "\n"), "\n")
 		lines = append(lines, "", "Ctrl+C: Copy text", "Esc/q: Close")
 	case "diff":
 		title = "Artifact Diff"
+		minW = 64
+		maxWCap = maxModalW
+		minH = 12
 		lines = strings.Split(strings.TrimSuffix(r.diffText, "\n"), "\n")
 		lines = append(lines, "", "Ctrl+C: Copy text", "Esc/q: Close")
 	case "info":
 		title = firstNonEmptyStr(r.infoTitle, "Info")
+		minW = 50
+		maxWCap = min(maxModalW, 100)
+		minH = 10
 		lines = strings.Split(strings.TrimSuffix(r.infoText, "\n"), "\n")
 		lines = append(lines, "", "Ctrl+C: Copy text", "Esc/q: Close")
 	default:
@@ -1713,11 +1993,11 @@ func (r *Root) overlaySpec(top string) (overlaySpec, bool) {
 	if len(lines) == 0 {
 		lines = []string{"(empty)"}
 	}
+	needW := contentWidth(lines) + 4
+	w := min(max(needW, minW), maxWCap)
 	needH := len(lines) + 2
-	maxH := max(8, r.rows-4)
-	if needH > h {
-		h = min(needH, maxH)
-	}
+	h := min(max(needH, minH), maxModalH)
+
 	return overlaySpec{
 		title:    title,
 		lines:    lines,
@@ -1726,6 +2006,101 @@ func (r *Root) overlaySpec(top string) (overlaySpec, bool) {
 		startRow: (r.rows - h) / 2,
 		startCol: (r.cols - w) / 2,
 	}, true
+}
+
+func (r *Root) confettiActive() bool {
+	if !r.result.Visible || !r.result.Passed {
+		return false
+	}
+	return normalizeMotionLevel(r.motionLevel) != "off"
+}
+
+func (r *Root) applyConfetti(base string) string {
+	rows := max(1, r.rows)
+	cols := max(1, r.cols)
+	out := normalizeScreen(base, rows, cols)
+	for _, p := range r.confettiParticles(cols, rows) {
+		if p.row < 0 || p.row >= rows || p.col < 0 || p.col >= cols {
+			continue
+		}
+		out = composeOverlayAt(out, p.glyph, cols, rows, p.row, p.col)
+	}
+	return out
+}
+
+func (r *Root) confettiParticles(cols, rows int) []confettiParticle {
+	if cols < 8 || rows < 6 {
+		return nil
+	}
+
+	count := 22
+	if normalizeMotionLevel(r.motionLevel) == "reduced" {
+		count = 12
+	}
+
+	glyphs := []string{"✦", "✶", "✷", "❖"}
+	if r.ascii {
+		glyphs = []string{"*", "+", "."}
+	}
+	colorize := []func(...string) string{
+		r.theme.Pass.Render,
+		r.theme.Accent.Render,
+		r.theme.Pending.Render,
+		r.theme.Info.Render,
+	}
+
+	seed := r.confettiSeed()
+	next := func() uint64 {
+		seed = seed*1664525 + 1013904223
+		return seed
+	}
+
+	minRow := 1
+	maxRowExclusive := rows - 1 // keep status row clear
+	if maxRowExclusive <= minRow {
+		return nil
+	}
+
+	spec, hasModal := r.overlaySpec(r.topOverlay())
+	particles := make([]confettiParticle, 0, count)
+	seen := make(map[int]struct{}, count)
+	maxAttempts := count * 12
+	for i := 0; i < maxAttempts && len(particles) < count; i++ {
+		row := minRow + int(next()%uint64(max(1, maxRowExclusive-minRow)))
+		col := int(next() % uint64(cols))
+		if hasModal &&
+			row >= spec.startRow-1 && row <= spec.startRow+spec.height &&
+			col >= spec.startCol-1 && col <= spec.startCol+spec.width {
+			continue
+		}
+		key := row*cols + col
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		glyph := glyphs[int(next()%uint64(len(glyphs)))]
+		style := colorize[int(next()%uint64(len(colorize)))]
+		particles = append(particles, confettiParticle{
+			row:   row,
+			col:   col,
+			glyph: style(glyph),
+		})
+	}
+	return particles
+}
+
+func (r *Root) confettiSeed() uint64 {
+	h := fnv.New64a()
+	payload := fmt.Sprintf(
+		"%s|%s|%d|%s|%d",
+		r.state.PackID,
+		r.state.LevelID,
+		r.result.Score,
+		r.result.Summary,
+		len(r.result.Checks),
+	)
+	_, _ = h.Write([]byte(payload))
+	return h.Sum64()
 }
 
 func (r *Root) headerText() string {
@@ -2070,6 +2445,8 @@ func (r *Root) mainMenuItems() []menuItem {
 		{Label: "Continue", Action: "continue"},
 		{Label: "Daily Drill", Action: "daily"},
 		{Label: "Level Select", Action: "select"},
+		{Label: "Campaign", Action: "campaign"},
+		{Label: "Practice", Action: "practice"},
 		{Label: "Settings", Action: "settings"},
 		{Label: "Stats", Action: "stats"},
 		{Label: "Quit", Action: "quit"},
@@ -2084,9 +2461,13 @@ func (r *Root) mainMenuInfoText(items []menuItem) string {
 		case "continue":
 			action = "Continue your most recent level run."
 		case "daily":
-			action = "Daily drill uses deterministic state in dev mode."
+			action = "Start today's deterministic daily challenge."
+		case "campaign":
+			action = "Play structured progression with prerequisites."
+		case "practice":
+			action = "Browse packs and choose any level."
 		case "select":
-			action = "Browse packs and choose a level."
+			action = "Open level browser directly."
 		case "settings":
 			action = "Inspect runtime configuration."
 		case "stats":
@@ -2097,6 +2478,9 @@ func (r *Root) mainMenuInfoText(items []menuItem) string {
 	}
 	var b strings.Builder
 	b.WriteString("CLI Dojo\n\n")
+	if strings.TrimSpace(r.mainMenu.ModeLabel) != "" {
+		b.WriteString(fmt.Sprintf("Mode: %s\n", r.mainMenu.ModeLabel))
+	}
 	b.WriteString(fmt.Sprintf("Engine: %s\n", firstNonEmptyStr(r.mainMenu.EngineName, "unknown")))
 	b.WriteString(fmt.Sprintf("Packs: %d  Levels: %d\n", r.mainMenu.PackCount, r.mainMenu.LevelCount))
 	b.WriteString(fmt.Sprintf("Due Reviews: %d\n", r.mainMenu.DueReviews))
@@ -2112,6 +2496,101 @@ func (r *Root) mainMenuInfoText(items []menuItem) string {
 	}
 	b.WriteString("\nAction:\n" + action + "\n")
 	return b.String()
+}
+
+func (r *Root) mainMenuDescription(action string) string {
+	switch action {
+	case "continue":
+		return "Resume your latest run"
+	case "daily":
+		return "Deterministic daily set"
+	case "campaign":
+		return "Progressive guided track"
+	case "practice":
+		return "Free play practice mode"
+	case "select":
+		return "Browse all levels"
+	case "settings":
+		return "Configure UI and checks"
+	case "stats":
+		return "Review performance"
+	default:
+		return "Exit CLI Dojo"
+	}
+}
+
+func (r *Root) refreshMainMenuList() {
+	items := r.mainMenuItems()
+	listItems := make([]list.Item, 0, len(items))
+	for _, item := range items {
+		listItems = append(listItems, uiListItem{
+			title:       item.Label,
+			description: r.mainMenuDescription(item.Action),
+			filterValue: strings.ToLower(item.Label + " " + item.Action),
+		})
+	}
+	r.mainList.SetItems(listItems)
+	if len(listItems) == 0 {
+		r.mainMenuIndex = 0
+		return
+	}
+	r.mainMenuIndex = wrapIndex(r.mainMenuIndex, len(listItems))
+	r.mainList.Select(r.mainMenuIndex)
+}
+
+func (r *Root) refreshLevelSelectLists() {
+	packItems := make([]list.Item, 0, len(r.catalog))
+	for _, p := range r.catalog {
+		packItems = append(packItems, uiListItem{
+			title:       p.Name,
+			description: fmt.Sprintf("%d levels", len(p.Levels)),
+			filterValue: strings.ToLower(p.PackID + " " + p.Name),
+		})
+	}
+	r.packList.SetItems(packItems)
+	if len(packItems) > 0 {
+		r.packIndex = wrapIndex(r.packIndex, len(packItems))
+		r.packList.Select(r.packIndex)
+	} else {
+		r.packIndex = 0
+	}
+
+	levels := r.selectedPackLevels()
+	levelItems := make([]list.Item, 0, len(levels))
+	for _, lv := range levels {
+		state := "new"
+		if lv.Locked {
+			state = "locked"
+		} else if lv.PassedCount > 0 {
+			state = "done"
+		}
+		title := fmt.Sprintf("%s [d:%d ~%dm]", lv.Title, lv.Difficulty, lv.EstimatedMinutes)
+		levelItems = append(levelItems, uiListItem{
+			title:       title,
+			description: state,
+			filterValue: strings.ToLower(lv.LevelID + " " + lv.Title + " " + strings.Join(lv.ToolFocus, " ")),
+		})
+	}
+	r.levelList.SetItems(levelItems)
+	if len(levelItems) > 0 {
+		r.levelIndex = wrapIndex(r.levelIndex, len(levelItems))
+		r.levelList.Select(r.levelIndex)
+	} else {
+		r.levelIndex = 0
+	}
+}
+
+func (r *Root) updateDetailViewport(width, height int) {
+	innerW := max(1, width)
+	innerH := max(1, height)
+	r.detailVP.SetWidth(innerW)
+	r.detailVP.SetHeight(innerH)
+	content := r.levelDetailText()
+	if content != r.detailMD {
+		r.detailMD = content
+		r.detailVP.SetContent(content)
+		r.detailVP.GotoTop()
+	}
 }
 
 func (r *Root) settingsMenuItems() []menuItem {
@@ -2210,6 +2689,24 @@ func (r *Root) levelDetailText() string {
 	if lv.Tier > 0 {
 		b.WriteString(fmt.Sprintf("Tier: %d\n", lv.Tier))
 	}
+	if lv.PassedCount > 0 {
+		b.WriteString(fmt.Sprintf("Completed: %d run(s)", lv.PassedCount))
+		if lv.BestScore > 0 {
+			b.WriteString(fmt.Sprintf("  Best score: %d", lv.BestScore))
+		}
+		b.WriteString("\n")
+	}
+	if lv.Locked {
+		lockReason := strings.TrimSpace(lv.LockReason)
+		if lockReason == "" {
+			lockReason = "This level is locked."
+		}
+		b.WriteString("Status: LOCKED\n")
+		b.WriteString(lockReason + "\n")
+	}
+	if len(lv.Prerequisites) > 0 {
+		b.WriteString("Prerequisites: " + strings.Join(lv.Prerequisites, ", ") + "\n")
+	}
 	if len(lv.ToolFocus) > 0 {
 		b.WriteString("Tools: " + strings.Join(lv.ToolFocus, ", ") + "\n")
 	}
@@ -2231,8 +2728,41 @@ func (r *Root) levelDetailText() string {
 			b.WriteString("- " + obj + "\n")
 		}
 	}
-	b.WriteString("\nEnter: Start level    Esc: Back to main menu")
+	if lv.Locked {
+		b.WriteString("\nEnter: Locked    Esc: Back to main menu")
+	} else {
+		b.WriteString("\nEnter: Start level    Esc: Back to main menu")
+	}
 	return b.String()
+}
+
+func (r *Root) briefingText() string {
+	levels := r.selectedPackLevels()
+	if len(levels) == 0 {
+		return "No selectable level."
+	}
+	lv := levels[wrapIndex(r.levelIndex, len(levels))]
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("%s\n", lv.Title))
+	b.WriteString(fmt.Sprintf("Level: %s\nDifficulty: %d\nEstimated: %d min\n", lv.LevelID, lv.Difficulty, lv.EstimatedMinutes))
+	if len(lv.ToolFocus) > 0 {
+		b.WriteString("Tools: " + strings.Join(lv.ToolFocus, ", ") + "\n")
+	}
+	if len(lv.Concepts) > 0 {
+		b.WriteString("Concepts: " + strings.Join(lv.Concepts, ", ") + "\n")
+	}
+	if len(lv.ObjectiveBullets) > 0 {
+		b.WriteString("\nObjectives:\n")
+		for _, obj := range lv.ObjectiveBullets {
+			b.WriteString("- " + obj + "\n")
+		}
+	}
+	if strings.TrimSpace(lv.SummaryMD) != "" {
+		b.WriteString("\nSummary:\n")
+		b.WriteString(strings.TrimSpace(lv.SummaryMD))
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 type menuItem struct {
@@ -2259,8 +2789,14 @@ func (r *Root) activateMainMenuSelection() {
 	}
 	item := items[wrapIndex(r.mainMenuIndex, len(items))]
 	switch item.Action {
-	case "continue", "daily":
+	case "continue":
 		r.dispatchController(func(c Controller) { c.OnContinue() })
+	case "daily":
+		r.dispatchController(func(c Controller) { c.OnStartDailyDrill() })
+	case "campaign":
+		r.dispatchController(func(c Controller) { c.OnStartCampaign() })
+	case "practice":
+		r.dispatchController(func(c Controller) { c.OnStartPractice() })
 	case "select":
 		r.dispatchController(func(c Controller) { c.OnOpenLevelSelect() })
 	case "settings":
@@ -2300,12 +2836,22 @@ func (r *Root) activateMenuItem(item menuItem) {
 
 func (r *Root) startSelectedLevel() {
 	pack := r.selectedPackSummary()
-	if pack == nil || len(pack.Levels) == 0 {
+	levels := r.selectedPackLevels()
+	if pack == nil || len(levels) == 0 {
 		return
 	}
-	idx := wrapIndex(r.levelIndex, len(pack.Levels))
-	lv := pack.Levels[idx]
+	idx := wrapIndex(r.levelIndex, len(levels))
+	lv := levels[idx]
+	if lv.Locked {
+		reason := strings.TrimSpace(lv.LockReason)
+		if reason == "" {
+			reason = "Level is locked."
+		}
+		r.statusFlash = reason
+		return
+	}
 	r.selectedLevel = lv.LevelID
+	r.briefingOpen = false
 	r.dispatchController(func(c Controller) { c.OnStartLevel(pack.PackID, lv.LevelID) })
 }
 
@@ -2313,6 +2859,7 @@ func (r *Root) syncCatalogSelection() {
 	if len(r.catalog) == 0 {
 		r.packIndex = 0
 		r.levelIndex = 0
+		r.refreshLevelSelectLists()
 		return
 	}
 	pidx := 0
@@ -2344,10 +2891,12 @@ func (r *Root) syncCatalogSelection() {
 	r.levelIndex = lidx
 	r.selectedPack = pack.PackID
 	r.selectedLevel = levels[lidx].LevelID
+	r.refreshLevelSelectLists()
 }
 
 func (r *Root) syncSelectionFromIndices() {
 	if len(r.catalog) == 0 {
+		r.refreshLevelSelectLists()
 		return
 	}
 	r.packIndex = wrapIndex(r.packIndex, len(r.catalog))
@@ -2357,6 +2906,7 @@ func (r *Root) syncSelectionFromIndices() {
 	if len(levels) == 0 {
 		r.levelIndex = 0
 		r.selectedLevel = ""
+		r.refreshLevelSelectLists()
 		return
 	}
 	if r.selectedLevel != "" {
@@ -2364,12 +2914,14 @@ func (r *Root) syncSelectionFromIndices() {
 			if lv.LevelID == r.selectedLevel {
 				r.levelIndex = i
 				r.selectedLevel = lv.LevelID
+				r.refreshLevelSelectLists()
 				return
 			}
 		}
 	}
 	r.levelIndex = wrapIndex(r.levelIndex, len(levels))
 	r.selectedLevel = levels[r.levelIndex].LevelID
+	r.refreshLevelSelectLists()
 }
 
 func (r *Root) selectedPackSummary() *PackSummary {
@@ -2449,6 +3001,12 @@ func (r *Root) levelMatchesSearch(lv LevelSummary, q string) bool {
 		b.WriteString("\n")
 		b.WriteString(strings.ToLower(item))
 	}
+	for _, item := range lv.Prerequisites {
+		b.WriteString("\n")
+		b.WriteString(strings.ToLower(item))
+	}
+	b.WriteString("\n")
+	b.WriteString(strings.ToLower(lv.LockReason))
 	for _, item := range lv.ObjectiveBullets {
 		b.WriteString("\n")
 		b.WriteString(strings.ToLower(item))
@@ -2462,6 +3020,8 @@ func (r *Root) topOverlay() string {
 		return "diff"
 	case r.referenceOpen:
 		return "reference"
+	case r.briefingOpen:
+		return "briefing"
 	case r.settingsOpen:
 		return "settings"
 	case r.infoOpen:
@@ -2492,6 +3052,8 @@ func (r *Root) closeTopOverlay() {
 	case "reference":
 		r.referenceOpen = false
 		r.referenceText = ""
+	case "briefing":
+		r.briefingOpen = false
 	case "settings":
 		r.settingsOpen = false
 		r.settingsIndex = 0
@@ -2603,6 +3165,8 @@ func (r *Root) overlayCopyText(full bool) string {
 		return title + "\n\n" + text
 	case "hints":
 		return strings.TrimSpace(r.hintsText())
+	case "briefing":
+		return strings.TrimSpace(r.briefingText())
 	}
 	return ""
 }
@@ -2779,6 +3343,14 @@ func escFlushCmd(seq uint64) tea.Cmd {
 	})
 }
 
+func csiFlushCmd(seq uint64) tea.Cmd {
+	// Some browser/websocket terminals deliver ESC + "[" + "B" as separate
+	// events. Buffer briefly so we can coalesce the CSI prefix and final byte.
+	return tea.Tick(35*time.Millisecond, func(time.Time) tea.Msg {
+		return csiFlushMsg{seq: seq}
+	})
+}
+
 func firstNonEmptyStr(a, b string) string {
 	if strings.TrimSpace(a) != "" {
 		return a
@@ -2893,30 +3465,23 @@ func dimScreen(base string, cols, rows int) string {
 	if cols <= 0 || rows <= 0 {
 		return base
 	}
-	buf := cellbuf.NewBuffer(cols, rows)
-	cellbuf.SetContent(buf, normalizeScreen(base, rows, cols))
-	for y := 0; y < rows; y++ {
-		for x := 0; x < cols; x++ {
-			cell := buf.Cell(x, y)
-			if cell == nil {
-				continue
-			}
-			style := cell.Style
-			style.Faint(true)
-			cell.Style = style
-		}
+	lines := normalizeScreenLines(base, rows, cols)
+	for i := range lines {
+		// Apply faint at line scope to avoid lossy ANSI/cell conversion artifacts
+		// when composing overlays over already styled terminal content.
+		lines[i] = "\x1b[2m" + lines[i] + "\x1b[22m"
 	}
-	return cellbuf.Render(buf)
+	return strings.Join(lines, "\n")
 }
 
 func composeOverlayAt(base, overlay string, cols, rows, startRow, startCol int) string {
 	if cols <= 0 || rows <= 0 {
 		return base
 	}
-	base = normalizeScreen(base, rows, cols)
+	baseLines := normalizeScreenLines(base, rows, cols)
 	overlayLines := strings.Split(strings.TrimRight(overlay, "\n"), "\n")
 	if len(overlayLines) == 0 {
-		return base
+		return strings.Join(baseLines, "\n")
 	}
 	if startRow < 0 {
 		startRow = 0
@@ -2925,7 +3490,7 @@ func composeOverlayAt(base, overlay string, cols, rows, startRow, startCol int) 
 		startCol = 0
 	}
 	if startRow >= rows || startCol >= cols {
-		return base
+		return strings.Join(baseLines, "\n")
 	}
 
 	ow := 1
@@ -2943,16 +3508,21 @@ func composeOverlayAt(base, overlay string, cols, rows, startRow, startCol int) 
 		if len(prepared) >= maxOH {
 			break
 		}
-		prepared = append(prepared, line)
+		prepared = append(prepared, padANSI(ansi.Truncate(line, ow, ""), ow))
 	}
 	if len(prepared) == 0 {
-		return base
+		return strings.Join(baseLines, "\n")
 	}
-	buf := cellbuf.NewBuffer(cols, rows)
-	cellbuf.SetContent(buf, base)
-	rect := cellbuf.Rect(startCol, startRow, ow, len(prepared))
-	cellbuf.SetContentRect(buf, strings.Join(prepared, "\n"), rect)
-	return cellbuf.Render(buf)
+	for i, line := range prepared {
+		row := startRow + i
+		if row < 0 || row >= rows {
+			continue
+		}
+		left := ansi.Cut(baseLines[row], 0, startCol)
+		right := ansi.Cut(baseLines[row], startCol+ow, cols)
+		baseLines[row] = left + line + right
+	}
+	return strings.Join(baseLines, "\n")
 }
 
 func normalizeScreen(screen string, rows, cols int) string {
@@ -2993,20 +3563,6 @@ func maxFloat(a, b float64) float64 {
 		return a
 	}
 	return b
-}
-
-func (r *Root) currentMouseMode() tea.MouseMode {
-	switch r.mouseScope {
-	case "off":
-		return tea.MouseModeNone
-	case "full":
-		return tea.MouseModeCellMotion
-	default:
-		if r.screen == ScreenPlaying && !r.overlayActive() && !r.goalOpen {
-			return tea.MouseModeNone
-		}
-		return tea.MouseModeCellMotion
-	}
 }
 
 func normalizeStyleVariant(v string) string {

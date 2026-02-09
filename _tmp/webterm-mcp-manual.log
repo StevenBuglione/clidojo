@@ -1,0 +1,15 @@
+Restarting local webterm on port 7781...
+Rebuilding...
+Stopping existing webterm on 127.0.0.1:7781 (if any)...
+Starting fresh webterm at http://127.0.0.1:7781 (session clidojo-debug)
+
+Local webterm: http://127.0.0.1:7781
+Dev API:       http://127.0.0.1:17341/__dev/ready
+
+Tunnel password (required once per public IP):
+68.129.122.205
+
+Starting public tunnel for Playwright MCP...
+Keep this process running while debugging.
+
+your url is: https://sixty-eels-sip.loca.lt

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/charmbracelet/bubbletea/v2"
 )
 
 // EncodeKeyPressToBytes converts Bubble Tea key events to terminal byte

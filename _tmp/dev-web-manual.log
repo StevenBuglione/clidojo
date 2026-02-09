@@ -1,0 +1,17 @@
+Starting web terminal at http://127.0.0.1:7781
+mode: direct (no tmux)
+command: ./bin/clidojo --dev --sandbox=docker --demo=playable --dev-http=127.0.0.1:17341 --data-dir=/tmp/clidojo-manual-data
+[2026/02/09 07:38:25:0531] N: ttyd 1.7.7-40e79c7 (libwebsockets 4.3.3-unknown)
+[2026/02/09 07:38:25:0531] N: tty configuration:
+[2026/02/09 07:38:25:0531] N:   start command: /home/sbuglione/clidojo/_tmp/webterm-runner-clidojo-dev-web.sh
+[2026/02/09 07:38:25:0531] N:   close signal: SIGHUP (1)
+[2026/02/09 07:38:25:0531] N:   terminal type: xterm-256color
+[2026/02/09 07:38:25:0531] N:   max clients: 4
+[2026/02/09 07:38:25:0531] N: lws_create_context: LWS: 4.3.3-unknown, MbedTLS-2.28.5 NET SRV H1 H2 WS ConMon IPV6-off
+[2026/02/09 07:38:25:0562] N: elops_init_pt_uv:  Using foreign event loop...
+[2026/02/09 07:38:25:0563] N: __lws_lc_tag:  ++ [wsi|0|pipe] (1)
+[2026/02/09 07:38:25:0563] N: __lws_lc_tag:  ++ [vh|0|netlink] (1)
+[2026/02/09 07:38:25:0564] N: __lws_lc_tag:  ++ [vh|1|default|127.0.0.1|127.0.0.1|7781] (2)
+[2026/02/09 07:38:25:0674] N: [vh|1|default|127.0.0.1|127.0.0.1|7781]: lws_socket_bind: source ads 127.0.0.1
+[2026/02/09 07:38:25:0674] N: __lws_lc_tag:  ++ [wsi|1|listen|default|127.0.0.1|7781] (2)
+[2026/02/09 07:38:25:0674] N:  Listening on port: 7781

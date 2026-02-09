@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
@@ -48,6 +49,10 @@ type App struct {
 	pack        levels.Pack
 	level       levels.Level
 	activeLevel bool
+	mode        GameMode
+	dailyDay    string
+	dailyPlan   []dailyLevelRef
+	dailyIndex  int
 
 	handle sandbox.Handle
 	runID  int64
@@ -98,6 +103,11 @@ type App struct {
 
 	imageMu      sync.Mutex
 	ensuredImage map[string]bool
+}
+
+type dailyLevelRef struct {
+	PackID  string `json:"pack_id"`
+	LevelID string `json:"level_id"`
 }
 
 func New(cfg Config) (*App, error) {
@@ -160,6 +170,7 @@ func New(cfg Config) (*App, error) {
 		level:        packs[0].LoadedLevels[0],
 		checkStatus:  map[string]string{},
 		screen:       ui.ScreenMainMenu,
+		mode:         ModeFreePlay,
 		ensuredImage: map[string]bool{},
 	}
 	view.SetController(a)
@@ -169,6 +180,8 @@ func New(cfg Config) (*App, error) {
 
 func (a *App) Run(ctx context.Context) error {
 	a.logger.Info("app.start", map[string]any{"session": a.sessionID, "sandbox": a.cfg.SandboxMode})
+	a.loadPersistedSettings(ctx)
+	a.refreshCatalog()
 
 	engine, err := a.sandbox.Detect(ctx, a.cfg.EngineOverride)
 	if err != nil {
@@ -231,6 +244,12 @@ func (a *App) stopLevelRuntime(ctx context.Context) {
 }
 
 func (a *App) startLevel(ctx context.Context, newRun bool) error {
+	setLoading := func(step string) {
+		a.view.SetInfo("Loading level", step, true)
+	}
+	setLoading("Preparing runtime...")
+	defer a.view.SetInfo("", "", false)
+
 	a.stopLevelRuntime(ctx)
 	a.view.SetResult(ui.ResultState{})
 	a.resultOpen = false
@@ -238,12 +257,14 @@ func (a *App) startLevel(ctx context.Context, newRun bool) error {
 	a.view.SetDiffText("", false)
 
 	workDir := filepath.Join(a.cfg.DataDir, "work", a.sessionID, a.level.LevelID)
+	setLoading("Staging workspace...")
 	a.logger.Info("level.stage_workdir", map[string]any{"workdir": workDir})
 	if err := a.loader.StageWorkdir(a.level, workDir); err != nil {
 		return err
 	}
 
 	ensureCtx, ensureCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	setLoading("Resolving container image...")
 	image, err := a.ensureLevelImage(ensureCtx)
 	ensureCancel()
 	if err != nil {
@@ -258,6 +279,7 @@ func (a *App) startLevel(ctx context.Context, newRun bool) error {
 		tmpfs = append(tmpfs, sandbox.TmpfsMount{Mount: tm.Mount, Options: tm.Options})
 	}
 
+	setLoading("Starting sandbox...")
 	handle, err := a.sandbox.StartLevel(ctx, sandbox.StartSpec{
 		SessionID:     a.sessionID,
 		PackID:        a.pack.PackID,
@@ -293,6 +315,7 @@ func (a *App) startLevel(ctx context.Context, newRun bool) error {
 			SessionID: a.sessionID,
 			PackID:    a.pack.PackID,
 			LevelID:   a.level.LevelID,
+			Mode:      string(a.mode),
 			StartTS:   time.Now().UTC(),
 		})
 		if err != nil {
@@ -314,6 +337,7 @@ func (a *App) startLevel(ctx context.Context, newRun bool) error {
 	}
 
 	if handle.IsMock() {
+		setLoading("Starting demo terminal...")
 		a.logger.Info("term.mode", map[string]any{"mode": "playback"})
 		if err := os.WriteFile(filepath.Join(workDir, ".dojo_cmdlog"), []byte(a.demo.MockCmdLog(a.level.LevelID)), 0o644); err != nil {
 			return err
@@ -325,6 +349,7 @@ func (a *App) startLevel(ctx context.Context, newRun bool) error {
 		}
 		a.logger.Info("term.playback.started", map[string]any{"level": a.level.LevelID})
 	} else {
+		setLoading("Starting interactive shell...")
 		a.logger.Info("term.mode", map[string]any{"mode": "pty"})
 		// Keep interactive shell lifecycle tied to explicit Stop() calls rather
 		// than short-lived handler contexts.
@@ -433,10 +458,14 @@ func (a *App) hintUnlocked(idx int) (bool, string) {
 }
 
 func (a *App) modeLabel() string {
-	if a.cfg.Dev {
+	switch a.mode {
+	case ModeDailyDrill:
 		return "Daily Drill"
+	case ModeCampaign:
+		return "Campaign"
+	default:
+		return "Free Play"
 	}
-	return "Free Play"
 }
 
 func (a *App) OnContinue() {
@@ -444,15 +473,103 @@ func (a *App) OnContinue() {
 	defer cancel()
 
 	if last, err := a.store.GetLastRun(ctx); err == nil && last != nil {
+		a.mode = normalizeGameMode(last.Mode)
 		if pack, level, findErr := a.loader.FindLevel(a.packs, last.PackID, last.LevelID); findErr == nil {
 			a.pack = pack
 			a.level = level
 		}
 	}
+	if a.mode == ModeDailyDrill {
+		plan, idx, err := a.loadOrCreateDailyPlan(ctx, time.Now().UTC())
+		if err == nil && len(plan) > 0 {
+			a.dailyDay = time.Now().UTC().Format("2006-01-02")
+			a.dailyPlan = plan
+			if idx < 0 {
+				idx = 0
+			}
+			if idx >= len(plan) {
+				idx = len(plan) - 1
+			}
+			a.dailyIndex = idx
+			if pack, level, findErr := a.loader.FindLevel(a.packs, plan[idx].PackID, plan[idx].LevelID); findErr == nil {
+				a.pack = pack
+				a.level = level
+			}
+		}
+	} else {
+		a.dailyDay = ""
+		a.dailyPlan = nil
+		a.dailyIndex = 0
+	}
+	a.refreshCatalog()
+	a.view.SetMainMenuState(a.mainMenuState())
 	if err := a.startLevel(ctx, true); err != nil {
 		a.view.FlashStatus("continue failed: " + err.Error())
 		return
 	}
+}
+
+func (a *App) OnStartDailyDrill() {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	day := time.Now().UTC()
+	plan, idx, err := a.loadOrCreateDailyPlan(ctx, day)
+	if err != nil {
+		a.view.FlashStatus("daily drill unavailable: " + err.Error())
+		return
+	}
+	if len(plan) == 0 {
+		a.view.FlashStatus("daily drill unavailable: no levels")
+		return
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(plan) {
+		// Day already completed; allow replay from final challenge.
+		idx = len(plan) - 1
+	}
+	selected := plan[idx]
+	pack, level, err := a.loader.FindLevel(a.packs, selected.PackID, selected.LevelID)
+	if err != nil {
+		a.view.FlashStatus("daily drill unavailable: " + err.Error())
+		return
+	}
+	a.mode = ModeDailyDrill
+	a.dailyDay = day.Format("2006-01-02")
+	a.dailyPlan = plan
+	a.dailyIndex = idx
+	a.pack = pack
+	a.level = level
+	a.refreshCatalog()
+	a.view.SetMainMenuState(a.mainMenuState())
+	a.view.SetLevelSelection(a.pack.PackID, a.level.LevelID)
+	if err := a.startLevel(ctx, true); err != nil {
+		a.view.FlashStatus("daily drill failed: " + err.Error())
+		return
+	}
+	a.view.FlashStatus(fmt.Sprintf("Daily drill %d/%d", idx+1, len(plan)))
+}
+
+func (a *App) OnStartCampaign() {
+	a.mode = ModeCampaign
+	a.dailyDay = ""
+	a.dailyPlan = nil
+	a.dailyIndex = 0
+	a.refreshCatalog()
+	a.view.SetMainMenuState(a.mainMenuState())
+	a.OnOpenLevelSelect()
+}
+
+func (a *App) OnStartPractice() {
+	a.mode = ModeFreePlay
+	a.dailyDay = ""
+	a.dailyPlan = nil
+	a.dailyIndex = 0
+	a.refreshCatalog()
+	a.view.SetMainMenuState(a.mainMenuState())
+	a.OnOpenLevelSelect()
 }
 
 func (a *App) OnOpenLevelSelect() {
@@ -486,6 +603,12 @@ func (a *App) OnStartLevel(packID, levelID string) {
 	if err != nil {
 		a.view.FlashStatus("level not found: " + err.Error())
 		return
+	}
+	if a.mode == ModeCampaign {
+		if locked, reason := a.levelLocked(level); locked {
+			a.view.FlashStatus(reason)
+			return
+		}
 	}
 	a.pack = pack
 	a.level = level
@@ -708,6 +831,14 @@ func (a *App) executeCheck(manual bool, source string) {
 	breakdown = append(breakdown, ui.BreakdownRow{Label: "total", Value: fmt.Sprintf("%d", result.Score.TotalPoints)})
 
 	a.applyResultStreak(result.Passed, failedRun)
+	_ = a.store.UpsertLevelProgress(context.Background(), state.LevelProgressUpdate{
+		LevelID:      a.level.LevelID,
+		Passed:       result.Passed,
+		Score:        result.Score.TotalPoints,
+		DurationMS:   result.Run.DurationMS,
+		LastPlayedTS: time.Now().UTC(),
+	})
+	a.refreshCatalog()
 	a.syncPlayingState(result.Score.TotalPoints, a.badgesFor(result.Passed))
 	quietFail := a.autoCheckQuietFail
 	if manual || result.Passed || !quietFail {
@@ -1101,7 +1232,14 @@ func (a *App) OnJournal() {
 }
 
 func (a *App) OnJournalExplainAI() {
-	a.view.SetInfo("AI Explain", "AI explain is optional and currently disabled in this local build.", true)
+	entries := a.readJournalEntries()
+	if len(entries) == 0 {
+		a.view.SetInfo("AI Explain", "No journal entries yet. Run a command in the terminal first.", true)
+		return
+	}
+	latest := entries[len(entries)-1]
+	explainerText := buildJournalExplainText(latest.Command, a.level, a.checkStatus, a.lastResult.Passed)
+	a.view.SetInfo("AI Explain", explainerText, true)
 }
 
 func (a *App) OnChangeLevel() {
@@ -1176,6 +1314,13 @@ func (a *App) OnApplySettings(update ui.SettingsState) {
 		return
 	}
 	a.cfg = updated
+	_ = a.store.SaveSettings(context.Background(), map[string]string{
+		"auto_check_mode":        a.cfg.Gameplay.AutoCheckDefault,
+		"auto_check_debounce_ms": strconv.Itoa(a.cfg.Gameplay.AutoCheckDebounceMS),
+		"style_variant":          a.cfg.UI.StyleVariant,
+		"motion_level":           a.cfg.UI.MotionLevel,
+		"mouse_scope":            a.cfg.UI.MouseScope,
+	})
 	if a.activeLevel {
 		a.startAutoCheckLoop()
 	}
@@ -1193,6 +1338,16 @@ func (a *App) OnNextLevel() {
 	if !a.activeLevel || !a.lastResult.Passed {
 		return
 	}
+
+	if a.mode == ModeDailyDrill {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := a.advanceDailyDrill(ctx); err != nil {
+			a.view.FlashStatus("daily drill failed: " + err.Error())
+		}
+		return
+	}
+
 	a.advanceLevel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -1262,7 +1417,6 @@ func (a *App) OnResize(cols, rows int) {
 	}
 	mode := ui.DetermineLayoutMode(cols, rows)
 	if mode == ui.LayoutTooSmall {
-		a.view.SetTooSmall(cols, rows)
 		return
 	}
 	h := rows - 4
@@ -1587,6 +1741,7 @@ func (a *App) startDevHTTP() error {
 }
 
 func (a *App) catalog() []ui.PackSummary {
+	progressMap, _ := a.store.GetLevelProgressMap(context.Background())
 	out := make([]ui.PackSummary, 0, len(a.packs))
 	for _, p := range a.packs {
 		ps := ui.PackSummary{
@@ -1594,7 +1749,26 @@ func (a *App) catalog() []ui.PackSummary {
 			Name:   p.Name,
 			Levels: make([]ui.LevelSummary, 0, len(p.LoadedLevels)),
 		}
+		passedByLevel := map[string]bool{}
+		for levelID, progress := range progressMap {
+			passedByLevel[levelID] = progress.PassedCount > 0
+		}
 		for _, lv := range p.LoadedLevels {
+			progress := progressMap[lv.LevelID]
+			locked := false
+			lockReason := ""
+			if a.mode == ModeCampaign && len(lv.XProgression.Prerequisites) > 0 {
+				missing := make([]string, 0, len(lv.XProgression.Prerequisites))
+				for _, prereq := range lv.XProgression.Prerequisites {
+					if !passedByLevel[prereq] {
+						missing = append(missing, prereq)
+					}
+				}
+				if len(missing) > 0 {
+					locked = true
+					lockReason = "Prerequisites: " + strings.Join(missing, ", ")
+				}
+			}
 			ps.Levels = append(ps.Levels, ui.LevelSummary{
 				LevelID:          lv.LevelID,
 				Title:            lv.Title,
@@ -1605,6 +1779,11 @@ func (a *App) catalog() []ui.PackSummary {
 				ObjectiveBullets: append([]string(nil), lv.Objective.Bullets...),
 				Concepts:         append([]string(nil), lv.XTeaching.Concepts...),
 				Tier:             lv.XProgression.Tier,
+				Prerequisites:    append([]string(nil), lv.XProgression.Prerequisites...),
+				Locked:           locked,
+				LockReason:       lockReason,
+				PassedCount:      progress.PassedCount,
+				BestScore:        progress.BestScore,
 			})
 		}
 		out = append(out, ps)
@@ -1612,11 +1791,41 @@ func (a *App) catalog() []ui.PackSummary {
 	return out
 }
 
+func (a *App) refreshCatalog() {
+	a.view.SetCatalog(a.catalog())
+}
+
+func (a *App) loadPersistedSettings(ctx context.Context) {
+	values, err := a.store.LoadSettings(ctx)
+	if err != nil || len(values) == 0 {
+		return
+	}
+	if v, ok := values["auto_check_mode"]; ok {
+		a.cfg.Gameplay.AutoCheckDefault = normalizeAutoCheckMode(v)
+	}
+	if v, ok := values["auto_check_debounce_ms"]; ok {
+		if parsed, convErr := strconv.Atoi(v); convErr == nil && parsed > 0 {
+			a.cfg.Gameplay.AutoCheckDebounceMS = parsed
+		}
+	}
+	if v, ok := values["style_variant"]; ok {
+		a.cfg.UI.StyleVariant = strings.TrimSpace(v)
+	}
+	if v, ok := values["motion_level"]; ok {
+		a.cfg.UI.MotionLevel = strings.TrimSpace(v)
+	}
+	if v, ok := values["mouse_scope"]; ok {
+		a.cfg.UI.MouseScope = strings.TrimSpace(v)
+	}
+	_ = a.cfg.Validate()
+}
+
 func (a *App) mainMenuState() ui.MainMenuState {
 	summary, _ := a.store.GetSummary(context.Background())
 	last, _ := a.store.GetLastRun(context.Background())
 	dueReviews, _ := a.store.CountDueReviews(context.Background(), time.Now())
 	state := ui.MainMenuState{
+		ModeLabel:  a.modeLabel(),
 		EngineName: a.engine.Name,
 		PackCount:  len(a.packs),
 		DueReviews: dueReviews,
@@ -1645,6 +1854,7 @@ func (a *App) demoMainMenuState() ui.MainMenuState {
 		levelCount += len(p.LoadedLevels)
 	}
 	return ui.MainMenuState{
+		ModeLabel:   a.modeLabel(),
 		EngineName:  firstNonEmpty(a.engine.Name, "mock"),
 		PackCount:   len(a.packs),
 		LevelCount:  levelCount,
@@ -1730,6 +1940,187 @@ func (a *App) nextChallengeHint() string {
 		return "Next challenge: replay this level with fewer hints/resets for mastery."
 	}
 	return fmt.Sprintf("Next challenge: %s (difficulty %d, ~%d min).", next.Title, next.Difficulty, next.EstimatedMinutes)
+}
+
+func (a *App) pickDailyLevel(now time.Time) (levels.Pack, levels.Level, error) {
+	plan, idx, err := a.loadOrCreateDailyPlan(context.Background(), now)
+	if err != nil {
+		return levels.Pack{}, levels.Level{}, err
+	}
+	if len(plan) == 0 {
+		return levels.Pack{}, levels.Level{}, fmt.Errorf("no levels available")
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(plan) {
+		idx = len(plan) - 1
+	}
+	return a.loader.FindLevel(a.packs, plan[idx].PackID, plan[idx].LevelID)
+}
+
+func (a *App) deterministicDailyPlan(day time.Time, count int) []dailyLevelRef {
+	if count <= 0 {
+		count = 3
+	}
+	all := make([]dailyLevelRef, 0)
+	for _, p := range a.packs {
+		for _, lv := range p.LoadedLevels {
+			all = append(all, dailyLevelRef{PackID: p.PackID, LevelID: lv.LevelID})
+		}
+	}
+	if len(all) == 0 {
+		return nil
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].PackID == all[j].PackID {
+			return all[i].LevelID < all[j].LevelID
+		}
+		return all[i].PackID < all[j].PackID
+	})
+	if len(all) < count {
+		count = len(all)
+	}
+	daySeed := day.UTC().Format("2006-01-02")
+	var seed int64
+	for _, r := range daySeed {
+		seed = seed*31 + int64(r)
+	}
+	rng := rand.New(rand.NewSource(seed))
+	perm := rng.Perm(len(all))
+	out := make([]dailyLevelRef, 0, count)
+	for _, idx := range perm {
+		out = append(out, all[idx])
+		if len(out) == count {
+			break
+		}
+	}
+	return out
+}
+
+func (a *App) loadOrCreateDailyPlan(ctx context.Context, day time.Time) ([]dailyLevelRef, int, error) {
+	key := day.UTC().Format("2006-01-02")
+	record, err := a.store.GetDailyDrill(ctx, key)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	plan := []dailyLevelRef{}
+	completed := 0
+	if record != nil {
+		if err := json.Unmarshal([]byte(record.PlaylistJSON), &plan); err != nil {
+			plan = nil
+		}
+		completed = record.CompletedCount
+	}
+
+	if len(plan) == 0 {
+		plan = a.deterministicDailyPlan(day, 3)
+		if len(plan) == 0 {
+			return nil, 0, fmt.Errorf("no levels available")
+		}
+		body, _ := json.Marshal(plan)
+		if err := a.store.UpsertDailyDrill(ctx, state.DailyDrill{
+			Day:            key,
+			PlaylistJSON:   string(body),
+			CompletedCount: 0,
+			UpdatedTS:      time.Now().UTC(),
+		}); err != nil {
+			return nil, 0, err
+		}
+		completed = 0
+	}
+
+	filtered := make([]dailyLevelRef, 0, len(plan))
+	for _, entry := range plan {
+		if strings.TrimSpace(entry.PackID) == "" || strings.TrimSpace(entry.LevelID) == "" {
+			continue
+		}
+		if _, _, err := a.loader.FindLevel(a.packs, entry.PackID, entry.LevelID); err != nil {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	if len(filtered) == 0 {
+		return nil, 0, fmt.Errorf("daily drill playlist has no valid levels")
+	}
+	if completed < 0 {
+		completed = 0
+	}
+	return filtered, completed, nil
+}
+
+func (a *App) advanceDailyDrill(ctx context.Context) error {
+	if len(a.dailyPlan) == 0 {
+		plan, idx, err := a.loadOrCreateDailyPlan(ctx, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		a.dailyDay = time.Now().UTC().Format("2006-01-02")
+		a.dailyPlan = plan
+		if idx < 0 {
+			idx = 0
+		}
+		a.dailyIndex = idx
+	}
+	if len(a.dailyPlan) == 0 {
+		return fmt.Errorf("daily drill playlist unavailable")
+	}
+
+	// Mark current level as completed for today.
+	completed := a.dailyIndex + 1
+	playlistJSON, _ := json.Marshal(a.dailyPlan)
+	if err := a.store.UpsertDailyDrill(ctx, state.DailyDrill{
+		Day:            firstNonEmpty(a.dailyDay, time.Now().UTC().Format("2006-01-02")),
+		PlaylistJSON:   string(playlistJSON),
+		CompletedCount: completed,
+		UpdatedTS:      time.Now().UTC(),
+	}); err != nil {
+		return err
+	}
+
+	if completed >= len(a.dailyPlan) {
+		a.view.FlashStatus("Daily drill complete! Come back tomorrow.")
+		a.OnBackToMainMenu()
+		return nil
+	}
+
+	next := a.dailyPlan[completed]
+	pack, level, err := a.loader.FindLevel(a.packs, next.PackID, next.LevelID)
+	if err != nil {
+		return err
+	}
+	a.pack = pack
+	a.level = level
+	a.dailyIndex = completed
+	a.refreshCatalog()
+	a.view.SetMainMenuState(a.mainMenuState())
+	a.view.SetLevelSelection(a.pack.PackID, a.level.LevelID)
+	if err := a.startLevel(ctx, true); err != nil {
+		return err
+	}
+	a.view.FlashStatus(fmt.Sprintf("Daily drill %d/%d", completed+1, len(a.dailyPlan)))
+	return nil
+}
+
+func (a *App) levelLocked(level levels.Level) (bool, string) {
+	if len(level.XProgression.Prerequisites) == 0 {
+		return false, ""
+	}
+	progressMap, err := a.store.GetLevelProgressMap(context.Background())
+	if err != nil {
+		return false, ""
+	}
+	missing := make([]string, 0, len(level.XProgression.Prerequisites))
+	for _, prereq := range level.XProgression.Prerequisites {
+		if progressMap[prereq].PassedCount <= 0 {
+			missing = append(missing, prereq)
+		}
+	}
+	if len(missing) == 0 {
+		return false, ""
+	}
+	return true, "Level locked. Complete prerequisites: " + strings.Join(missing, ", ")
 }
 
 func (a *App) sessionGoalsForLevel() []string {

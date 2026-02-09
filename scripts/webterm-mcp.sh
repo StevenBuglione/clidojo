@@ -6,6 +6,7 @@ repo_root="$(cd "${script_dir}/.." && pwd)"
 
 port="${CLIDOJO_WEBTERM_PORT:-7681}"
 dev_http="${DEV_HTTP:-127.0.0.1:17321}"
+use_tmux="${CLIDOJO_WEBTERM_USE_TMUX:-0}"
 
 if ! command -v npx >/dev/null 2>&1; then
   echo "npx is required to run localtunnel (Node.js)." >&2
@@ -15,7 +16,7 @@ fi
 echo "Restarting local webterm on port ${port}..." >&2
 (
   cd "${repo_root}"
-  DEV_HTTP="${dev_http}" CLIDOJO_WEBTERM_PORT="${port}" make webterm-restart >/dev/null
+  DEV_HTTP="${dev_http}" CLIDOJO_WEBTERM_PORT="${port}" CLIDOJO_WEBTERM_USE_TMUX="${use_tmux}" make webterm-restart >/dev/null
 )
 
 echo >&2

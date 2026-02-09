@@ -2,7 +2,7 @@
 set -euo pipefail
 cd '/home/sbuglione/clidojo'
 set +e
-bash -lc './bin/clidojo --sandbox=docker --dev --dev-http=127.0.0.1:17321'
+bash -lc './bin/clidojo --sandbox=docker --demo=playable'
 status=$?
 set -e
 printf '\n[webterm] command exited with status %s\n' "$status"

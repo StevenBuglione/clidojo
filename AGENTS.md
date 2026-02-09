@@ -13,12 +13,12 @@ Deterministic local mode:
 ./bin/clidojo --dev --sandbox=mock --demo=playable
 ```
 
-## Webterm (ttyd + tmux)
+## Webterm (ttyd, optional tmux)
 
 Prerequisites:
 
 - `ttyd`
-- `tmux`
+- `tmux` (optional; only required when `CLIDOJO_WEBTERM_USE_TMUX=1`)
 
 Primary workflows:
 
@@ -62,6 +62,9 @@ CLIDOJO_WEBTERM_PORT=7683 CLIDOJO_WEBTERM_SESSION=clidojo-review make webterm-re
 
 # real container run in webterm:
 CLIDOJO_WEBTERM_CMD='./bin/clidojo --dev --sandbox=auto --dev-http=127.0.0.1:17321' make webterm-restart
+
+# direct mode (recommended for input debugging / avoids tmux key interception):
+CLIDOJO_WEBTERM_USE_TMUX=0 make webterm-restart
 ```
 
 Quick health checks:

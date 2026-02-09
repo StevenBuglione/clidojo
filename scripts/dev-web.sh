@@ -18,8 +18,10 @@ fi
 
 export CLIDOJO_WEBTERM_HOST="${CLIDOJO_WEBTERM_HOST:-127.0.0.1}"
 export CLIDOJO_WEBTERM_PORT="${PORT}"
+export CLIDOJO_WEBTERM_CLIENTS="${CLIDOJO_WEBTERM_CLIENTS:-4}"
 export CLIDOJO_WEBTERM_SESSION="${CLIDOJO_WEBTERM_SESSION:-clidojo-dev-web}"
 export CLIDOJO_WEBTERM_RESET_SESSION="${CLIDOJO_WEBTERM_RESET_SESSION:-1}"
+export CLIDOJO_WEBTERM_USE_TMUX="${CLIDOJO_WEBTERM_USE_TMUX:-0}"
 default_cmd="./bin/clidojo --dev --sandbox=mock --demo=playable --dev-http=${DEV_HTTP}"
 if [ -n "$CLIDOJO_DATA_DIR" ]; then
   default_cmd="$default_cmd --data-dir=${CLIDOJO_DATA_DIR}"

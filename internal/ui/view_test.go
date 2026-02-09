@@ -8,13 +8,16 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"clidojo/internal/term"
+	tea "github.com/charmbracelet/bubbletea/v2"
 )
 
 type mockController struct {
 	mu            sync.Mutex
 	continueCalls int
+	dailyCalls    int
+	campaignCalls int
+	practiceCalls int
 	quitCalls     int
 	resetCalls    int
 	menuCalls     int
@@ -30,6 +33,21 @@ func (m *mockController) OnContinue() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.continueCalls++
+}
+func (m *mockController) OnStartDailyDrill() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dailyCalls++
+}
+func (m *mockController) OnStartCampaign() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.campaignCalls++
+}
+func (m *mockController) OnStartPractice() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.practiceCalls++
 }
 func (m *mockController) OnOpenLevelSelect()          {}
 func (m *mockController) OnStartLevel(string, string) {}
@@ -158,11 +176,44 @@ func (m *mockController) SettingsUpdates() []SettingsState {
 	return out
 }
 
-type bracketedPane struct {
+type spyPane struct {
 	*term.TerminalPane
+	mu        sync.Mutex
+	inputs    [][]byte
+	bracketed bool
 }
 
-func (p bracketedPane) BracketedPasteEnabled() bool { return true }
+func newSpyPane() *spyPane {
+	return &spyPane{TerminalPane: term.NewTerminalPane(nil)}
+}
+
+func (p *spyPane) SendInput(data []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cp := append([]byte(nil), data...)
+	p.inputs = append(p.inputs, cp)
+	return nil
+}
+
+func (p *spyPane) Inputs() [][]byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([][]byte, len(p.inputs))
+	for i := range p.inputs {
+		out[i] = append([]byte(nil), p.inputs[i]...)
+	}
+	return out
+}
+
+func (p *spyPane) BracketedPasteEnabled() bool {
+	if p.bracketed {
+		return true
+	}
+	if p.TerminalPane == nil {
+		return false
+	}
+	return p.TerminalPane.BracketedPasteEnabled()
+}
 
 type panicSnapshotPane struct {
 	*term.TerminalPane
@@ -393,29 +444,25 @@ func TestOverlayEnterHandlesModalAction(t *testing.T) {
 }
 
 func TestEscPassesThroughToTerminal(t *testing.T) {
-	pane := term.NewTerminalPane(nil)
+	pane := newSpyPane()
 	v := New(Options{TermPane: pane})
-	ctrl := &mockController{}
-	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 
 	press(v, tea.KeyEsc, 0, "")
 
 	deadline := time.Now().Add(300 * time.Millisecond)
-	for len(ctrl.Inputs()) == 0 && time.Now().Before(deadline) {
+	for len(pane.Inputs()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	inputs := ctrl.Inputs()
+	inputs := pane.Inputs()
 	if len(inputs) != 1 || string(inputs[0]) != "\x1b" {
 		t.Fatalf("expected escape to be forwarded to terminal")
 	}
 }
 
 func TestEscFragmentCoalescesWithoutDuplicateEsc(t *testing.T) {
-	pane := term.NewTerminalPane(nil)
+	pane := newSpyPane()
 	v := New(Options{TermPane: pane})
-	ctrl := &mockController{}
-	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 	v.running = true
 	var prog tea.Program
@@ -425,23 +472,21 @@ func TestEscFragmentCoalescesWithoutDuplicateEsc(t *testing.T) {
 	_, _ = v.Update(tea.KeyPressMsg{Text: "[B"})
 
 	deadline := time.Now().Add(300 * time.Millisecond)
-	for len(ctrl.Inputs()) == 0 && time.Now().Before(deadline) {
+	for len(pane.Inputs()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	// Allow esc flush timer to fire if it was queued incorrectly.
 	time.Sleep(50 * time.Millisecond)
 
-	inputs := ctrl.Inputs()
+	inputs := pane.Inputs()
 	if len(inputs) != 1 || string(inputs[0]) != "\x1b[B" {
 		t.Fatalf("expected coalesced down-arrow bytes only, got %#v", inputs)
 	}
 }
 
 func TestEscSplitPrefixThenFinalByteForwardsAsCSI(t *testing.T) {
-	pane := term.NewTerminalPane(nil)
+	pane := newSpyPane()
 	v := New(Options{TermPane: pane})
-	ctrl := &mockController{}
-	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 	v.running = true
 	var prog tea.Program
@@ -453,57 +498,74 @@ func TestEscSplitPrefixThenFinalByteForwardsAsCSI(t *testing.T) {
 	_, _ = v.Update(tea.KeyPressMsg{Code: 'B', Text: "B"})
 
 	deadline := time.Now().Add(300 * time.Millisecond)
-	for len(ctrl.Inputs()) < 2 && time.Now().Before(deadline) {
+	for len(pane.Inputs()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	// Allow esc flush timer to fire if it was queued incorrectly.
 	time.Sleep(50 * time.Millisecond)
 
-	inputs := ctrl.Inputs()
-	if len(inputs) < 2 {
-		t.Fatalf("expected at least 2 input chunks, got %#v", inputs)
+	inputs := pane.Inputs()
+	if len(inputs) != 1 || string(inputs[0]) != "\x1b[B" {
+		t.Fatalf("expected coalesced CSI down-arrow bytes, got %#v", inputs)
 	}
-	if string(inputs[0]) != "\x1b[" {
-		t.Fatalf("expected first chunk ESC+[ prefix, got %q", string(inputs[0]))
+}
+
+func TestEscSplitPrefixThenKeyCodeForwardsAsCSI(t *testing.T) {
+	pane := newSpyPane()
+	v := New(Options{TermPane: pane})
+	v.SetScreen(ScreenPlaying)
+	v.running = true
+	var prog tea.Program
+	v.program = &prog
+
+	// Simulate browser/websocket splitting arrow-down as ESC, then "[" then
+	// a terminal key code event instead of literal "B" text.
+	_, _ = v.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	_, _ = v.Update(tea.KeyPressMsg{Code: '[', Text: "["})
+	_, _ = v.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for len(pane.Inputs()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
 	}
-	if string(inputs[1]) != "B" {
-		t.Fatalf("expected second chunk final byte B, got %q", string(inputs[1]))
+	// Allow esc/csi flush timers to fire if they were queued incorrectly.
+	time.Sleep(50 * time.Millisecond)
+
+	inputs := pane.Inputs()
+	if len(inputs) != 1 || string(inputs[0]) != "\x1b[B" {
+		t.Fatalf("expected coalesced key-code CSI down-arrow bytes, got %#v", inputs)
 	}
 }
 
 func TestTabPassesThroughToTerminal(t *testing.T) {
-	pane := term.NewTerminalPane(nil)
+	pane := newSpyPane()
 	v := New(Options{TermPane: pane})
-	ctrl := &mockController{}
-	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 
 	press(v, tea.KeyTab, 0, "")
 
 	deadline := time.Now().Add(300 * time.Millisecond)
-	for len(ctrl.Inputs()) == 0 && time.Now().Before(deadline) {
+	for len(pane.Inputs()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	inputs := ctrl.Inputs()
+	inputs := pane.Inputs()
 	if len(inputs) != 1 || string(inputs[0]) != "\t" {
 		t.Fatalf("expected tab to be forwarded to terminal")
 	}
 }
 
 func TestCtrlRPassesThroughToTerminal(t *testing.T) {
-	pane := term.NewTerminalPane(nil)
+	pane := newSpyPane()
 	v := New(Options{TermPane: pane})
-	ctrl := &mockController{}
-	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 
 	press(v, 'r', tea.ModCtrl, "")
 
 	deadline := time.Now().Add(300 * time.Millisecond)
-	for len(ctrl.Inputs()) == 0 && time.Now().Before(deadline) {
+	for len(pane.Inputs()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	inputs := ctrl.Inputs()
+	inputs := pane.Inputs()
 	if len(inputs) != 1 || string(inputs[0]) != "\x12" {
 		t.Fatalf("expected ctrl+r to be forwarded to terminal reverse-search")
 	}
@@ -513,54 +575,49 @@ func TestCtrlRPassesThroughToTerminal(t *testing.T) {
 }
 
 func TestPasteMsgPassesThroughToTerminal(t *testing.T) {
-	pane := term.NewTerminalPane(nil)
+	pane := newSpyPane()
 	v := New(Options{TermPane: pane})
-	ctrl := &mockController{}
-	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 
-	_, _ = v.Update(tea.PasteMsg{Content: "echo hi\npwd\n"})
+	_, _ = v.Update(tea.PasteMsg("echo hi\npwd\n"))
 
 	deadline := time.Now().Add(300 * time.Millisecond)
-	for len(ctrl.Inputs()) == 0 && time.Now().Before(deadline) {
+	for len(pane.Inputs()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	inputs := ctrl.Inputs()
+	inputs := pane.Inputs()
 	if len(inputs) != 1 || string(inputs[0]) != "echo hi\npwd\n" {
 		t.Fatalf("expected pasted content to be forwarded unchanged")
 	}
 }
 
 func TestPasteMsgIgnoredWhenOverlayOpen(t *testing.T) {
-	pane := term.NewTerminalPane(nil)
+	pane := newSpyPane()
 	v := New(Options{TermPane: pane})
-	ctrl := &mockController{}
-	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 	v.SetMenuOpen(true)
 
-	_, _ = v.Update(tea.PasteMsg{Content: "echo should_not_send\n"})
+	_, _ = v.Update(tea.PasteMsg("echo should_not_send\n"))
 	time.Sleep(50 * time.Millisecond)
 
-	if len(ctrl.Inputs()) != 0 {
+	if len(pane.Inputs()) != 0 {
 		t.Fatalf("expected paste to be ignored while overlay is open")
 	}
 }
 
 func TestPasteMsgUsesBracketedPasteWhenEnabled(t *testing.T) {
-	pane := bracketedPane{TerminalPane: term.NewTerminalPane(nil)}
+	pane := newSpyPane()
+	pane.bracketed = true
 	v := New(Options{TermPane: pane})
-	ctrl := &mockController{}
-	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 
-	_, _ = v.Update(tea.PasteMsg{Content: "echo hi\npwd\n"})
+	_, _ = v.Update(tea.PasteMsg("echo hi\npwd\n"))
 
 	deadline := time.Now().Add(300 * time.Millisecond)
-	for len(ctrl.Inputs()) == 0 && time.Now().Before(deadline) {
+	for len(pane.Inputs()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	inputs := ctrl.Inputs()
+	inputs := pane.Inputs()
 	if len(inputs) != 1 {
 		t.Fatalf("expected bracketed paste content to be forwarded")
 	}
@@ -570,35 +627,31 @@ func TestPasteMsgUsesBracketedPasteWhenEnabled(t *testing.T) {
 }
 
 func TestCtrlVRequestsClipboardPaste(t *testing.T) {
-	pane := term.NewTerminalPane(nil)
+	pane := newSpyPane()
 	v := New(Options{TermPane: pane})
-	ctrl := &mockController{}
-	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 
 	_, cmd := v.Update(tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl, Text: "v"})
 	if cmd == nil {
 		t.Fatalf("expected ctrl+v to request clipboard read")
 	}
-	if len(ctrl.Inputs()) != 0 {
+	if len(pane.Inputs()) != 0 {
 		t.Fatalf("expected ctrl+v to avoid direct terminal write before clipboard read")
 	}
 }
 
 func TestClipboardMsgPassesThroughToTerminal(t *testing.T) {
-	pane := term.NewTerminalPane(nil)
+	pane := newSpyPane()
 	v := New(Options{TermPane: pane})
-	ctrl := &mockController{}
-	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 
-	_, _ = v.Update(tea.ClipboardMsg{Content: "echo from clipboard\n"})
+	_, _ = v.Update(tea.ClipboardMsg("echo from clipboard\n"))
 
 	deadline := time.Now().Add(300 * time.Millisecond)
-	for len(ctrl.Inputs()) == 0 && time.Now().Before(deadline) {
+	for len(pane.Inputs()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	inputs := ctrl.Inputs()
+	inputs := pane.Inputs()
 	if len(inputs) != 1 || string(inputs[0]) != "echo from clipboard\n" {
 		t.Fatalf("expected clipboard content to be forwarded unchanged")
 	}
@@ -608,6 +661,13 @@ func TestOverlayCopyShortcutSetsStatusFlash(t *testing.T) {
 	pane := term.NewTerminalPane(nil)
 	v := New(Options{TermPane: pane})
 	v.SetScreen(ScreenPlaying)
+	v.SetPlayingState(PlayingState{
+		ModeLabel: "Free Play",
+		PackID:    "builtin-core",
+		LevelID:   "level-001",
+		StartedAt: time.Now(),
+		HudWidth:  42,
+	})
 	v.SetResult(ResultState{
 		Visible: true,
 		Passed:  true,
@@ -622,6 +682,56 @@ func TestOverlayCopyShortcutSetsStatusFlash(t *testing.T) {
 	}
 	if v.statusFlash == "" {
 		t.Fatalf("expected status flash after copy")
+	}
+}
+
+func TestPassResultRendersConfettiWhenMotionEnabled(t *testing.T) {
+	pane := term.NewTerminalPane(nil)
+	v := New(Options{TermPane: pane, MotionLevel: "full"})
+	v.SetScreen(ScreenPlaying)
+	v.SetPlayingState(PlayingState{
+		ModeLabel: "Free Play",
+		PackID:    "builtin-core",
+		LevelID:   "level-001-pipes-101",
+		StartedAt: time.Now(),
+		HudWidth:  42,
+	})
+	v.SetResult(ResultState{
+		Visible: true,
+		Passed:  true,
+		Summary: "pass",
+		Checks:  []CheckResultRow{{ID: "c1", Passed: true, Message: "ok"}},
+		Score:   1000,
+	})
+
+	out := v.View()
+	if !strings.Contains(out, "✦") && !strings.Contains(out, "✶") && !strings.Contains(out, "✷") && !strings.Contains(out, "❖") {
+		t.Fatalf("expected pass result view to render confetti particles")
+	}
+}
+
+func TestPassResultSkipsConfettiWhenMotionOff(t *testing.T) {
+	pane := term.NewTerminalPane(nil)
+	v := New(Options{TermPane: pane, MotionLevel: "off"})
+	v.SetScreen(ScreenPlaying)
+	v.SetPlayingState(PlayingState{
+		ModeLabel: "Free Play",
+		PackID:    "builtin-core",
+		LevelID:   "level-001-pipes-101",
+		StartedAt: time.Now(),
+		HudWidth:  42,
+	})
+	v.SetResult(ResultState{
+		Visible: true,
+		Passed:  true,
+		Summary: "pass",
+		Checks:  []CheckResultRow{{ID: "c1", Passed: true, Message: "ok"}},
+		Score:   1000,
+	})
+
+	out := v.View()
+	if strings.Contains(out, "✦") || strings.Contains(out, "✶") || strings.Contains(out, "✷") {
+		t.Fatalf("expected no confetti particles when motion is off")
 	}
 }
 
@@ -642,6 +752,53 @@ func TestStatusShowsCheckingSpinner(t *testing.T) {
 	out := v.statusText()
 	if !strings.Contains(out, "Checking") {
 		t.Fatalf("expected status to include checking spinner text")
+	}
+}
+
+func TestSpinnerTickIgnoredWhenNotChecking(t *testing.T) {
+	pane := term.NewTerminalPane(nil)
+	v := New(Options{TermPane: pane})
+	v.SetScreen(ScreenPlaying)
+
+	_, cmd := v.Update(spinnerTickCmd(v.checkSpin)())
+	if cmd != nil {
+		t.Fatalf("expected no spinner reschedule when checking is false")
+	}
+}
+
+func TestSpinnerStartMsgSchedulesTickWhenChecking(t *testing.T) {
+	pane := term.NewTerminalPane(nil)
+	v := New(Options{TermPane: pane})
+	v.SetScreen(ScreenPlaying)
+	v.SetChecking(true)
+
+	_, cmd := v.Update(spinnerStartMsg{})
+	if cmd == nil {
+		t.Fatalf("expected spinner start message to schedule a tick while checking")
+	}
+}
+
+func TestRenderPlayingClearsStaleTooSmallFlagWhenSizeIsValid(t *testing.T) {
+	pane := term.NewTerminalPane(nil)
+	v := New(Options{TermPane: pane})
+	v.SetScreen(ScreenPlaying)
+	v.SetPlayingState(PlayingState{
+		ModeLabel: "Free Play",
+		PackID:    "builtin-core",
+		LevelID:   "level-001",
+		StartedAt: time.Now(),
+		HudWidth:  42,
+	})
+	v.cols = 80
+	v.rows = 24
+	v.SetTooSmall(80, 24)
+
+	out := v.renderPlaying()
+	if v.forceTooSmall || v.layout == LayoutTooSmall {
+		t.Fatalf("expected stale too-small mode to clear at 80x24; force=%v layout=%v", v.forceTooSmall, v.layout)
+	}
+	if strings.Contains(out, "Resize Required") {
+		t.Fatalf("expected stale too-small panel to disappear at 80x24")
 	}
 }
 
@@ -713,7 +870,7 @@ func TestMainMenuEnterActivatesSelection(t *testing.T) {
 }
 
 func TestCtrlQPassesThroughToTerminal(t *testing.T) {
-	pane := term.NewTerminalPane(nil)
+	pane := newSpyPane()
 	v := New(Options{TermPane: pane})
 	ctrl := &mockController{}
 	v.SetController(ctrl)
@@ -722,13 +879,13 @@ func TestCtrlQPassesThroughToTerminal(t *testing.T) {
 	press(v, 'q', tea.ModCtrl, "")
 
 	deadline := time.Now().Add(300 * time.Millisecond)
-	for len(ctrl.Inputs()) == 0 && time.Now().Before(deadline) {
+	for len(pane.Inputs()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if ctrl.QuitCalls() != 0 {
 		t.Fatalf("expected Ctrl+Q not to trigger quit")
 	}
-	inputs := ctrl.Inputs()
+	inputs := pane.Inputs()
 	if len(inputs) == 0 || string(inputs[0]) != "\x11" {
 		t.Fatalf("expected Ctrl+Q to pass through as terminal input, got %#v", inputs)
 	}
@@ -773,22 +930,20 @@ func TestCtrlShortcutsEnabledInDevMode(t *testing.T) {
 }
 
 func TestCtrlShortcutsDoNotHijackNormalMode(t *testing.T) {
-	pane := term.NewTerminalPane(nil)
+	pane := newSpyPane()
 	v := New(Options{TermPane: pane})
-	ctrl := &mockController{}
-	v.SetController(ctrl)
 	v.SetScreen(ScreenPlaying)
 
 	press(v, 'r', tea.ModCtrl, "")
 
 	deadline := time.Now().Add(300 * time.Millisecond)
-	for len(ctrl.Inputs()) == 0 && time.Now().Before(deadline) {
+	for len(pane.Inputs()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if v.resetOpen {
 		t.Fatalf("expected Ctrl+R not to open reset modal outside dev mode")
 	}
-	inputs := ctrl.Inputs()
+	inputs := pane.Inputs()
 	if len(inputs) == 0 || string(inputs[0]) != "\x12" {
 		t.Fatalf("expected Ctrl+R to pass through as terminal input, got %#v", inputs)
 	}
@@ -856,7 +1011,7 @@ func TestRandomEventSequenceNoPanic(t *testing.T) {
 		tea.KeyPressMsg{Code: tea.KeyPgUp, Mod: tea.ModShift},
 		tea.KeyPressMsg{Code: 'a', Text: "a"},
 		tea.KeyPressMsg{Code: tea.KeyLeft, Mod: tea.ModCtrl},
-		tea.PasteMsg{Content: "echo fuzz\n"},
+		tea.PasteMsg("echo fuzz\n"),
 		tea.MouseClickMsg{X: 10, Y: 10, Button: tea.MouseLeft},
 		tea.MouseWheelMsg{X: 10, Y: 10, Button: tea.MouseWheelDown},
 	}
